@@ -95,10 +95,46 @@ struct AmendResult {
   constexpr bool operator==(const AmendResult&) const noexcept = default;
 };
 
+enum class InvariantViolation : std::uint8_t {
+  none,
+  occupancy_mismatch,
+  empty_level_metadata,
+  nonempty_invalid_head,
+  nonempty_invalid_tail,
+  order_index_out_of_range,
+  dead_order_reachable,
+  head_prev_not_invalid,
+  tail_next_not_invalid,
+  previous_not_reciprocal,
+  next_not_reciprocal,
+  duplicate_order_reachable,
+  order_side_mismatch,
+  order_level_mismatch,
+  nonpositive_remaining,
+  aggregate_overflow,
+  level_tail_mismatch,
+  level_count_mismatch,
+  level_aggregate_mismatch,
+  live_order_unreachable,
+  reachable_count_mismatch,
+  crossed_book,
+};
+
+struct InvariantResult {
+  InvariantViolation violation{InvariantViolation::none};
+  Side side{Side::buy};
+  std::uint32_t level_index{kInvalidIndex};
+  std::uint32_t order_index{kInvalidIndex};
+  std::uint32_t reachable_count{};
+
+  constexpr bool operator==(const InvariantResult&) const noexcept = default;
+};
+
 static_assert(std::is_trivially_copyable_v<Trade>);
 static_assert(std::is_trivially_copyable_v<SubmitResult>);
 static_assert(std::is_trivially_copyable_v<CancelResult>);
 static_assert(std::is_trivially_copyable_v<AmendResult>);
+static_assert(std::is_trivially_copyable_v<InvariantResult>);
 
 // OrderBook has one owning matching thread. Duplicate OrderId checks belong at
 // the gateway; the matcher deliberately carries no hot-path identifier map.
@@ -127,6 +163,7 @@ public:
   [[nodiscard]] std::optional<Price> best_ask() const noexcept;
   [[nodiscard]] std::optional<LevelInfo> level_info(Side side, Price price) const noexcept;
   [[nodiscard]] std::size_t required_trade_capacity() const noexcept;
+  [[nodiscard]] InvariantResult check_invariants() noexcept;
 
 private:
   [[nodiscard]] static PriceDomain checked_domain(PriceDomain domain);
@@ -152,6 +189,12 @@ private:
   [[nodiscard]] const PriceLevel& level(Side side, std::uint32_t index) const noexcept;
   [[nodiscard]] HierarchicalBitmap& occupancy(Side side) noexcept;
   [[nodiscard]] const HierarchicalBitmap& occupancy(Side side) const noexcept;
+  [[nodiscard]] InvariantResult check_side_invariants(Side side, std::uint32_t epoch,
+                                                      std::uint32_t& reachable_count) noexcept;
+  [[nodiscard]] static InvariantResult invariant_failure(InvariantViolation violation, Side side,
+                                                         std::uint32_t level_index,
+                                                         std::uint32_t order_index,
+                                                         std::uint32_t reachable_count) noexcept;
 
   PriceDomain domain_;
   std::uint32_t max_order_quantity_;
@@ -160,6 +203,8 @@ private:
   HierarchicalBitmap bid_occupancy_;
   HierarchicalBitmap ask_occupancy_;
   OrderArena arena_;
+  std::unique_ptr<std::uint32_t[]> visit_marks_;
+  std::uint32_t visit_epoch_{};
 };
 
 } // namespace matching_engine

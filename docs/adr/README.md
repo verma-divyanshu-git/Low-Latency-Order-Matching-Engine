@@ -13,3 +13,4 @@ A new record supersedes a decision when the architecture changes.
 - [ADR-0004: Bounded price domain and hierarchical occupancy bitmap](0004-bounded-price-domain-and-hierarchical-bitmap.md)
 - [ADR-0005: Single-writer matching and fixed caller-owned output](0005-single-writer-matching-and-fixed-output.md)
 - [ADR-0006: Cancel, amend, replace, and time-in-force semantics](0006-cancel-amend-replace-and-time-in-force.md)
+- [ADR-0007: Allocation-free structural invariant diagnostics](0007-allocation-free-structural-invariant-diagnostics.md)

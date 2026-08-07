@@ -11,6 +11,8 @@ It also includes a fixed-capacity order arena with generation-checked handles an
 Prices can be mapped into a validated bounded tick domain, and a fixed hierarchical bitmap tracks populated level indexes.
 A single-writer, fixed-capacity order book now matches GTC, IOC, FOK, and market orders with price-time priority, maker-price executions, caller-owned trade output, and no allocation after construction.
 Generation-checked cancellation, priority-preserving quantity decreases, and priority-losing cancel-replacement are implemented.
+Phase 2A adds an explicit allocation-free structural invariant checker for tests, deterministic replay verification, and debug tooling.
+The checker validates redundant level, occupancy, linked-list, arena-liveness, aggregate, reachability, and uncrossed-book representations without running on release order operations.
 Gateway sequencing and process-boundary interfaces are not implemented yet.
 No latency or throughput claims should be inferred from this repository.
 
@@ -87,6 +89,7 @@ Future benchmark reports will:
 - This is not production-ready trading software.
 - Persistence, recovery, networking, risk checks, authentication, authorization, administration, and operational monitoring are not implemented.
 - Duplicate order identifiers are not detected by the matching core and must be rejected by a future gateway.
+- Structural invariant checks do not prove global submitted, executed, and canceled volume conservation or self-trade prevention; those belong to the Phase 2 reference model and future STP tests.
 - Each order book requires exclusive access by one matching thread; concurrent calls are unsupported.
 - Price and order capacities are fixed at construction, and callers must provide `max_orders` trade slots for every submission.
 - Market and IOC residual is cancelled, while FOK rejects without mutation unless the full quantity is immediately executable within its limit.

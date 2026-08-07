@@ -132,6 +132,10 @@ private:
     return {.index = index, .generation = slots_[index].generation};
   }
 
+  [[nodiscard]] bool is_live_index(std::uint32_t index) const noexcept {
+    return index < capacity_ && slots_[index].live;
+  }
+
   void release_index(std::uint32_t index) noexcept {
     static_cast<void>(release(handle_at(index)));
   }

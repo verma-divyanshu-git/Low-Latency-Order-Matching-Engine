@@ -63,7 +63,10 @@ OrderBook::OrderBook(PriceDomain domain, std::size_t max_orders, Quantity max_or
       bids_{std::make_unique<PriceLevel[]>(domain_.tick_count())},
       asks_{std::make_unique<PriceLevel[]>(domain_.tick_count())},
       bid_occupancy_{domain_.tick_count()}, ask_occupancy_{domain_.tick_count()},
-      arena_{max_orders} {}
+      arena_{max_orders},
+      visit_marks_{arena_.capacity() == 0U ? nullptr
+                                           : std::make_unique<std::uint32_t[]>(arena_.capacity())} {
+}
 
 PriceDomain OrderBook::checked_domain(PriceDomain domain) {
   if (!detail::is_encodable_tick_count(domain.tick_count())) {
@@ -364,6 +367,198 @@ std::optional<LevelInfo> OrderBook::level_info(Side side, Price price) const noe
 
 std::size_t OrderBook::required_trade_capacity() const noexcept {
   return arena_.capacity();
+}
+
+InvariantResult OrderBook::invariant_failure(InvariantViolation violation, Side side,
+                                             std::uint32_t level_index, std::uint32_t order_index,
+                                             std::uint32_t reachable_count) noexcept {
+  return {.violation = violation,
+          .side = side,
+          .level_index = level_index,
+          .order_index = order_index,
+          .reachable_count = reachable_count};
+}
+
+InvariantResult OrderBook::check_side_invariants(Side side, std::uint32_t epoch,
+                                                 std::uint32_t& reachable_count) noexcept {
+  for (std::uint32_t level_index = 0U; level_index < domain_.tick_count(); ++level_index) {
+    const PriceLevel& price_level = level(side, level_index);
+    const bool nonempty = price_level.order_count != 0U;
+    const bool occupied = occupancy(side).test(level_index).value_or(false);
+    if (occupied != nonempty) {
+      return invariant_failure(InvariantViolation::occupancy_mismatch, side, level_index,
+                               kInvalidIndex, reachable_count);
+    }
+    if (!nonempty) {
+      if (price_level.head_index != kInvalidIndex || price_level.tail_index != kInvalidIndex ||
+          price_level.aggregate_quantity != 0U) {
+        return invariant_failure(InvariantViolation::empty_level_metadata, side, level_index,
+                                 kInvalidIndex, reachable_count);
+      }
+      continue;
+    }
+
+    if (price_level.head_index == kInvalidIndex) {
+      return invariant_failure(InvariantViolation::nonempty_invalid_head, side, level_index,
+                               kInvalidIndex, reachable_count);
+    }
+    if (price_level.tail_index == kInvalidIndex) {
+      return invariant_failure(InvariantViolation::nonempty_invalid_tail, side, level_index,
+                               kInvalidIndex, reachable_count);
+    }
+    if (price_level.head_index >= arena_.capacity()) {
+      return invariant_failure(InvariantViolation::order_index_out_of_range, side, level_index,
+                               price_level.head_index, reachable_count);
+    }
+    if (!arena_.is_live_index(price_level.head_index)) {
+      return invariant_failure(InvariantViolation::dead_order_reachable, side, level_index,
+                               price_level.head_index, reachable_count);
+    }
+    if (price_level.tail_index >= arena_.capacity()) {
+      return invariant_failure(InvariantViolation::order_index_out_of_range, side, level_index,
+                               price_level.tail_index, reachable_count);
+    }
+    if (!arena_.is_live_index(price_level.tail_index)) {
+      return invariant_failure(InvariantViolation::dead_order_reachable, side, level_index,
+                               price_level.tail_index, reachable_count);
+    }
+    if (arena_.order_at(price_level.head_index).prev_index != kInvalidIndex) {
+      return invariant_failure(InvariantViolation::head_prev_not_invalid, side, level_index,
+                               price_level.head_index, reachable_count);
+    }
+    if (arena_.order_at(price_level.tail_index).next_index != kInvalidIndex) {
+      return invariant_failure(InvariantViolation::tail_next_not_invalid, side, level_index,
+                               price_level.tail_index, reachable_count);
+    }
+
+    std::uint32_t current = price_level.head_index;
+    std::uint32_t previous = kInvalidIndex;
+    std::uint32_t walked_count = 0U;
+    std::uint64_t walked_quantity = 0U;
+    while (current != kInvalidIndex) {
+      if (current >= arena_.capacity()) {
+        return invariant_failure(InvariantViolation::order_index_out_of_range, side, level_index,
+                                 current, reachable_count);
+      }
+      if (!arena_.is_live_index(current)) {
+        return invariant_failure(InvariantViolation::dead_order_reachable, side, level_index,
+                                 current, reachable_count);
+      }
+      if (visit_marks_[current] == epoch) {
+        return invariant_failure(InvariantViolation::duplicate_order_reachable, side, level_index,
+                                 current, reachable_count);
+      }
+
+      const Order& order = arena_.order_at(current);
+      if (order.prev_index != previous) {
+        return invariant_failure(InvariantViolation::previous_not_reciprocal, side, level_index,
+                                 current, reachable_count);
+      }
+      if (detail::decode_side(order.encoded_level_side) != side) {
+        return invariant_failure(InvariantViolation::order_side_mismatch, side, level_index,
+                                 current, reachable_count);
+      }
+      if (detail::decode_level(order.encoded_level_side) != level_index) {
+        return invariant_failure(InvariantViolation::order_level_mismatch, side, level_index,
+                                 current, reachable_count);
+      }
+      if (order.remaining.value() == 0U) {
+        return invariant_failure(InvariantViolation::nonpositive_remaining, side, level_index,
+                                 current, reachable_count);
+      }
+      if (walked_quantity > std::numeric_limits<std::uint64_t>::max() - order.remaining.value()) {
+        return invariant_failure(InvariantViolation::aggregate_overflow, side, level_index, current,
+                                 reachable_count);
+      }
+
+      visit_marks_[current] = epoch;
+      ++reachable_count;
+      ++walked_count;
+      walked_quantity += order.remaining.value();
+      const std::uint32_t next = order.next_index;
+      if (next != kInvalidIndex) {
+        if (next >= arena_.capacity()) {
+          return invariant_failure(InvariantViolation::order_index_out_of_range, side, level_index,
+                                   next, reachable_count);
+        }
+        if (!arena_.is_live_index(next)) {
+          return invariant_failure(InvariantViolation::dead_order_reachable, side, level_index,
+                                   next, reachable_count);
+        }
+        if (arena_.order_at(next).prev_index != current) {
+          return invariant_failure(InvariantViolation::next_not_reciprocal, side, level_index,
+                                   current, reachable_count);
+        }
+      }
+      previous = current;
+      current = next;
+    }
+
+    if (previous != price_level.tail_index) {
+      return invariant_failure(InvariantViolation::level_tail_mismatch, side, level_index, previous,
+                               reachable_count);
+    }
+    if (walked_count != price_level.order_count) {
+      return invariant_failure(InvariantViolation::level_count_mismatch, side, level_index,
+                               kInvalidIndex, reachable_count);
+    }
+    if (walked_quantity != price_level.aggregate_quantity) {
+      return invariant_failure(InvariantViolation::level_aggregate_mismatch, side, level_index,
+                               kInvalidIndex, reachable_count);
+    }
+  }
+  return {.reachable_count = reachable_count};
+}
+
+InvariantResult OrderBook::check_invariants() noexcept {
+  if (visit_epoch_ == std::numeric_limits<std::uint32_t>::max()) {
+    for (std::uint32_t index = 0U; index < arena_.capacity(); ++index) {
+      visit_marks_[index] = 0U;
+    }
+    visit_epoch_ = 1U;
+  } else {
+    ++visit_epoch_;
+  }
+
+  std::uint32_t reachable_count = 0U;
+  InvariantResult result = check_side_invariants(Side::buy, visit_epoch_, reachable_count);
+  if (result.violation != InvariantViolation::none) {
+    return result;
+  }
+  result = check_side_invariants(Side::sell, visit_epoch_, reachable_count);
+  if (result.violation != InvariantViolation::none) {
+    return result;
+  }
+
+  for (std::uint32_t index = 0U; index < arena_.capacity(); ++index) {
+    if (!arena_.is_live_index(index)) {
+      continue;
+    }
+    if (arena_.order_at(index).remaining.value() == 0U) {
+      return invariant_failure(InvariantViolation::nonpositive_remaining,
+                               detail::decode_side(arena_.order_at(index).encoded_level_side),
+                               detail::decode_level(arena_.order_at(index).encoded_level_side),
+                               index, reachable_count);
+    }
+    if (visit_marks_[index] != visit_epoch_) {
+      return invariant_failure(InvariantViolation::live_order_unreachable,
+                               detail::decode_side(arena_.order_at(index).encoded_level_side),
+                               detail::decode_level(arena_.order_at(index).encoded_level_side),
+                               index, reachable_count);
+    }
+  }
+  if (reachable_count != arena_.size()) {
+    return invariant_failure(InvariantViolation::reachable_count_mismatch, Side::buy, kInvalidIndex,
+                             kInvalidIndex, reachable_count);
+  }
+
+  const auto bid = best_index(Side::buy);
+  const auto ask = best_index(Side::sell);
+  if (bid.has_value() && ask.has_value() && *bid >= *ask) {
+    return invariant_failure(InvariantViolation::crossed_book, Side::buy, *bid, kInvalidIndex,
+                             reachable_count);
+  }
+  return {.reachable_count = reachable_count};
 }
 
 PriceLevel& OrderBook::level(Side side, std::uint32_t index) noexcept {
