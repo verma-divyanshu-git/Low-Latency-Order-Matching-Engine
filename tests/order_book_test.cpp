@@ -18,6 +18,7 @@ static_assert(std::is_trivially_copyable_v<CancelResult>);
 static_assert(std::is_trivially_copyable_v<AmendResult>);
 static_assert(std::is_trivially_copyable_v<InvariantResult>);
 static_assert(noexcept(std::declval<OrderBook&>().check_invariants()));
+static_assert(InvariantViolation::bitmap_hierarchy_inconsistent != InvariantViolation::none);
 static_assert(noexcept(std::declval<OrderBook&>().submit_limit(OrderId{1}, Side::buy, Price{1},
                                                                Quantity{1},
                                                                std::declval<std::span<Trade>>())));

@@ -97,6 +97,7 @@ struct AmendResult {
 
 enum class InvariantViolation : std::uint8_t {
   none,
+  bitmap_hierarchy_inconsistent,
   occupancy_mismatch,
   empty_level_metadata,
   nonempty_invalid_head,

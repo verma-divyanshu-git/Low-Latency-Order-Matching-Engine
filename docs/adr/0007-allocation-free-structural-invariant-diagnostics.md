@@ -17,6 +17,7 @@ It must not allocate or throw after `OrderBook` construction, and it must not ad
 
 `OrderBook::check_invariants()` walks both sides and every configured price level in a fixed order.
 It cross-checks occupancy, empty-level metadata, list endpoints, reciprocal links, encoded ownership, positive remaining quantity, counts, aggregates, arena liveness, total reachability, and the uncrossed BBO condition.
+It validates each occupancy bitmap's summary hierarchy before any BBO traversal, while bitmap traversal independently bounds every derived word index.
 
 The book allocates one `uint32_t` visit-mark array at arena capacity during construction.
 Each check advances an epoch so normal checks do not clear the array.

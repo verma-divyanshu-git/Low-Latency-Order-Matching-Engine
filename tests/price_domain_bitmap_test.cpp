@@ -26,6 +26,7 @@ static_assert(noexcept(std::declval<const HierarchicalBitmap&>().first_set()));
 static_assert(noexcept(std::declval<const HierarchicalBitmap&>().last_set()));
 static_assert(noexcept(std::declval<const HierarchicalBitmap&>().next_set(0U)));
 static_assert(noexcept(std::declval<const HierarchicalBitmap&>().previous_set(0U)));
+static_assert(noexcept(std::declval<const HierarchicalBitmap&>().hierarchy_consistent()));
 
 TEST(PriceDomainTest, RejectsEmptyAndOverflowingDomains) {
   EXPECT_THROW((PriceDomain{Price{0}, 0U}), std::invalid_argument);
@@ -71,9 +72,13 @@ TEST(HierarchicalBitmapTest, HandlesBoundariesAndIdempotence) {
 
     EXPECT_EQ(bitmap.first_set(), std::nullopt);
     EXPECT_EQ(bitmap.last_set(), std::nullopt);
+    EXPECT_TRUE(bitmap.hierarchy_consistent());
     EXPECT_TRUE(bitmap.set(0U));
+    EXPECT_TRUE(bitmap.hierarchy_consistent());
     EXPECT_TRUE(bitmap.set(last));
+    EXPECT_TRUE(bitmap.hierarchy_consistent());
     EXPECT_TRUE(bitmap.set(last));
+    EXPECT_TRUE(bitmap.hierarchy_consistent());
     EXPECT_EQ(bitmap.test(0U), true);
     EXPECT_EQ(bitmap.test(last), true);
     EXPECT_EQ(bitmap.first_set(), 0U);
@@ -84,10 +89,13 @@ TEST(HierarchicalBitmapTest, HandlesBoundariesAndIdempotence) {
     EXPECT_EQ(bitmap.previous_set(last), last);
 
     EXPECT_TRUE(bitmap.clear(0U));
+    EXPECT_TRUE(bitmap.hierarchy_consistent());
     EXPECT_TRUE(bitmap.clear(0U));
+    EXPECT_TRUE(bitmap.hierarchy_consistent());
     EXPECT_EQ(bitmap.test(0U), false);
     EXPECT_EQ(bitmap.first_set(), last == 0U ? std::nullopt : std::optional<std::uint32_t>{last});
     EXPECT_TRUE(bitmap.clear(last));
+    EXPECT_TRUE(bitmap.hierarchy_consistent());
     EXPECT_EQ(bitmap.first_set(), std::nullopt);
   }
 }
@@ -179,6 +187,7 @@ TEST(HierarchicalBitmapTest, MatchesDeterministicReferenceModel) {
       }
       EXPECT_EQ(bitmap.first_set(), model_first(model));
       EXPECT_EQ(bitmap.last_set(), model_last(model));
+      EXPECT_TRUE(bitmap.hierarchy_consistent());
     }
   }
 }

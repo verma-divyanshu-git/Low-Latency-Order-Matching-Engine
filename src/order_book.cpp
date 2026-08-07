@@ -511,6 +511,15 @@ InvariantResult OrderBook::check_side_invariants(Side side, std::uint32_t epoch,
 }
 
 InvariantResult OrderBook::check_invariants() noexcept {
+  if (!bid_occupancy_.hierarchy_consistent()) {
+    return invariant_failure(InvariantViolation::bitmap_hierarchy_inconsistent, Side::buy,
+                             kInvalidIndex, kInvalidIndex, 0U);
+  }
+  if (!ask_occupancy_.hierarchy_consistent()) {
+    return invariant_failure(InvariantViolation::bitmap_hierarchy_inconsistent, Side::sell,
+                             kInvalidIndex, kInvalidIndex, 0U);
+  }
+
   if (visit_epoch_ == std::numeric_limits<std::uint32_t>::max()) {
     for (std::uint32_t index = 0U; index < arena_.capacity(); ++index) {
       visit_marks_[index] = 0U;
