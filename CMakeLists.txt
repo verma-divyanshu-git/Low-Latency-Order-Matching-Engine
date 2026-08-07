@@ -47,3 +47,17 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
   include(GoogleTest)
   gtest_discover_tests(matching_engine_core_tests)
 endif()
+
+if(ENGINE_ENABLE_FUZZING)
+  add_executable(order_book_fuzz tests/fuzz/order_book_fuzz.cpp)
+  target_include_directories(order_book_fuzz PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/support)
+  target_link_libraries(order_book_fuzz PRIVATE matching_engine::core)
+  engine_configure_fuzz_target(order_book_fuzz)
+
+  if(BUILD_TESTING)
+    add_test(
+      NAME order_book_fuzz_smoke
+      COMMAND order_book_fuzz -runs=10000 -max_len=448 -timeout=10)
+    set_tests_properties(order_book_fuzz_smoke PROPERTIES LABELS fuzz TIMEOUT 120)
+  endif()
+endif()

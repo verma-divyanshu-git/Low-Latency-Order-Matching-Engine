@@ -57,3 +57,57 @@ jobs:
 
       - name: Test
         run: ctest --preset release
+
+  sanitizer:
+    name: Ubuntu 22.04 ${{ matrix.name }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ASan
+            preset: asan
+          - name: UBSan
+            preset: ubsan
+
+    steps:
+      - name: Check out source
+        # actions/checkout v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install build tools
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install --yes cmake ninja-build
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}
+
+  fuzz:
+    name: Ubuntu 22.04 Clang fuzz smoke
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out source
+        # actions/checkout v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install Clang build tools
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install --yes clang cmake ninja-build
+
+      - name: Configure
+        run: cmake --preset fuzz
+
+      - name: Build
+        run: cmake --build --preset fuzz
+
+      - name: Run 10,000-execution smoke
+        run: ctest --preset fuzz -L fuzz

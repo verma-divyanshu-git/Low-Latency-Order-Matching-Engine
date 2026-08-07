@@ -15,6 +15,8 @@ Phase 2A adds an explicit allocation-free structural invariant checker for tests
 The checker validates redundant level, occupancy, linked-list, arena-liveness, aggregate, reachability, and uncrossed-book representations without running on release order operations.
 Phase 2B adds generation-validated live order inspection and an independent standard-library reference book.
 Ten fixed seeds exercise 10,000 normal differential operations, with additional labeled high-cancel and volatility-shock synthetic stress workloads.
+Structure-aware libFuzzer testing compares bounded public-operation sequences with that reference model and checks structural invariants after every operation.
+This increases defensive test coverage but does not prove correctness or imply that fuzzing has discovered a bug.
 Gateway sequencing and process-boundary interfaces are not implemented yet.
 No latency or throughput claims should be inferred from this repository.
 
@@ -105,6 +107,7 @@ Future benchmark reports will:
 
 - [Architecture decision records](docs/adr/README.md)
 - [Differential testing and replay](docs/differential-testing.md)
+- [Order book fuzzing](docs/fuzzing.md)
 - [Primary references](docs/references.md)
 - [Security policy](SECURITY.md)
 
