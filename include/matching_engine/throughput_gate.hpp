@@ -16,7 +16,7 @@ inline constexpr std::uint64_t kMaximumRepetitions = 21U;
 struct Config {
   std::uint64_t samples{100'000U};
   std::uint64_t repetitions{7U};
-  double minimum_ops_per_second{100'000.0};
+  double minimum_ops_per_second{1'000'000.0};
   double maximum_relative_mad{0.25};
   std::optional<std::filesystem::path> output;
 };

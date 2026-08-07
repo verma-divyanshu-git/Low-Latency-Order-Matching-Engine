@@ -64,13 +64,27 @@ class VerifyTuningTest(unittest.TestCase):
             **kwargs,
         )
 
-    def test_fully_qualified_x86_fixture(self):
+    def test_perfect_x86_fixture_cannot_qualify(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             qualified_fixture(root)
             report = self.report(root)
 
-        self.assertTrue(report["qualified"])
+        self.assertEqual(report["evidence_mode"], "fixture")
+        self.assertEqual(report["schema_version"], 2)
+        self.assertFalse(report["qualified"])
+        self.assertEqual(
+            set(report),
+            {
+                "schema_version",
+                "evidence_mode",
+                "platform",
+                "benchmark_cpu",
+                "sample_seconds",
+                "qualified",
+                "checks",
+            },
+        )
         self.assertGreaterEqual(len(report["checks"]), 20)
         self.assertEqual(
             [check["name"] for check in report["checks"]],
@@ -85,6 +99,29 @@ class VerifyTuningTest(unittest.TestCase):
         self.assertEqual(report["checks"][0]["name"], "platform_linux")
         self.assertNotIn("hostname", json.dumps(report))
         self.assertNotIn(str(pathlib.Path.home()), json.dumps(report))
+        self.assertTrue(all(
+            check["status"] == "pass"
+            for check in report["checks"]
+            if check["severity"] == "required"
+        ))
+
+    def test_fixture_cli_writes_nonqualified_report_and_exits_nonzero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            qualified_fixture(root)
+            output = root.parent / f"{root.name}-report.json"
+            exit_code = verify_tuning.main([
+                "--benchmark-cpu", "2",
+                "--sample-seconds", "1",
+                "--fixture-root", str(root),
+                "--output", str(output),
+            ])
+            report = json.loads(output.read_text(encoding="utf-8"))
+            output.unlink()
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(report["evidence_mode"], "fixture")
+        self.assertFalse(report["qualified"])
 
     def test_vm_fixture_is_disclosed_and_unqualified(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -123,6 +160,7 @@ class VerifyTuningTest(unittest.TestCase):
             report = self.report(pathlib.Path(directory), platform_name="darwin", architecture="arm64")
 
         self.assertEqual(report["platform"], {"system": "darwin", "architecture": "arm64"})
+        self.assertEqual(report["evidence_mode"], "fixture")
         self.assertFalse(report["qualified"])
         self.assertGreaterEqual(len(report["checks"]), 20)
         self.assertTrue(all(check["status"] == "unavailable" for check in report["checks"][1:]))
@@ -170,7 +208,94 @@ class VerifyTuningTest(unittest.TestCase):
 
         checks = {check["name"]: check for check in report["checks"]}
         self.assertEqual(checks["perf_event_access"]["status"], "pass")
-        self.assertTrue(report["qualified"])
+        self.assertFalse(report["qualified"])
+
+    def test_fixture_reader_rejects_symlink_escape(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = pathlib.Path(directory)
+            root = parent / "root"
+            outside = parent / "outside"
+            write(outside, "status", "Cpus_allowed_list:\t2\n")
+            (root / "proc").mkdir(parents=True)
+            (root / "proc/self").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaises(OSError):
+                verify_tuning.Reader(root, fixture=True).text("proc/self/status")
+
+    def test_fixture_reader_rejects_in_root_nested_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            write(root, "real/status", "Cpus_allowed_list:\t2\n")
+            (root / "proc").mkdir()
+            (root / "proc/self").symlink_to(root / "real", target_is_directory=True)
+
+            with self.assertRaises(OSError):
+                verify_tuning.Reader(root, fixture=True).text("proc/self/status")
+
+    def test_fixture_glob_rejects_symlink_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = pathlib.Path(directory)
+            root = parent / "root"
+            outside = parent / "outside"
+            outside.mkdir()
+            (root / "proc/irq").mkdir(parents=True)
+            (root / "proc/irq/0").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaises(OSError):
+                verify_tuning.Reader(root, fixture=True).paths(
+                    "proc/irq/*/effective_affinity_list"
+                )
+
+    def test_selected_cpu_flags_are_not_unioned_with_other_processors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            qualified_fixture(root)
+            write(
+                root,
+                "proc/cpuinfo",
+                "processor : 2\nflags : fpu\n\n"
+                "processor : 3\nflags : constant_tsc nonstop_tsc hypervisor\n",
+            )
+            report = self.report(root)
+
+        checks = {check["name"]: check for check in report["checks"]}
+        self.assertEqual(checks["tsc_constant"]["status"], "fail")
+        self.assertEqual(checks["tsc_nonstop"]["status"], "fail")
+        self.assertEqual(
+            checks["virtualization_disclosure"]["observed"],
+            "bare-metal-not-indicated",
+        )
+
+    def test_arm64_clocksource_requires_known_available_counter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            qualified_fixture(root)
+            current = "sys/devices/system/clocksource/clocksource0/current_clocksource"
+            available = "sys/devices/system/clocksource/clocksource0/available_clocksource"
+            write(root, current, "arch_sys_counter\n")
+            write(root, available, "arch_sys_counter\n")
+            accepted = self.report(root, architecture="arm64")
+            write(root, current, "unknown_counter\n")
+            unknown = self.report(root, architecture="arm64")
+            write(root, current, "\n")
+            empty = self.report(root, architecture="arm64")
+            write(root, current, "arch_sys_counter\n")
+            write(root, available, "\n")
+            unavailable = self.report(root, architecture="arm64")
+
+        self.assertEqual(
+            {check["name"]: check for check in accepted["checks"]}[
+                "clocksource_current"
+            ]["status"],
+            "pass",
+        )
+        for report in (unknown, empty, unavailable):
+            self.assertEqual(
+                {check["name"]: check for check in report["checks"]}[
+                    "clocksource_current"
+                ]["status"],
+                "fail",
+            )
 
     def test_irq_overlap_fails(self):
         with tempfile.TemporaryDirectory() as directory:

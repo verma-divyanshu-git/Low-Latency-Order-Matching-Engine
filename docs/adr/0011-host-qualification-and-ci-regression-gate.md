@@ -20,6 +20,13 @@ Missing architecture-specific advisory evidence is recorded as unavailable witho
 Missing required evidence makes the report nonqualified.
 Non-Linux invocations still write a valid nonqualified report and fail.
 Reports omit host identity and other sensitive machine identifiers.
+Host-qualification schema version 2 makes `evidence_mode` mandatory on every report.
+Only `live_host` evidence can qualify.
+Any fixture-root run is permanently labeled `fixture`, forced nonqualified, and exits nonzero even if all synthetic checks pass.
+Fixture reads canonicalize the root once, confine every resolved mapped path beneath it, and reject every symlink component.
+This read-only validation does not claim to eliminate filesystem TOCTOU races.
+Clocksource qualification uses an explicit architecture allow-list and requires the selected nonempty source in the nonempty available-source list.
+The accepted sources are `tsc` on x86 and `arch_sys_counter` on Linux arm64 and aarch64.
 
 A separate `order_book_throughput_gate` executable measures only a fixed crossing-limit batch.
 Construction and preload happen before each timed region.
@@ -31,7 +38,7 @@ Its scope is permanently `ci_regression_only`.
 The CI decision uses min-of-N throughput because occasional shared-runner interruption should not hide gross engine regressions.
 This statistic is optimistically biased and cannot support a sustained-throughput claim.
 Dispersion is independently gated with relative MAD and always reported.
-The initial floor is 1,000,000 operations per second, which is deliberately conservative relative to local evidence.
+The initial floor is the deliberately conservative policy value of 1,000,000 operations per second.
 The initial relative-MAD cap is 25 percent.
 Any later widening must document public-runner flakiness rather than silently weakening the signal.
 

@@ -4,17 +4,19 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import pathlib
 import platform
 import re
+import stat
 import sys
 import time
 from typing import Callable
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_CPU_ID = 1_048_575
 MAX_SAMPLE_SECONDS = 300
 MAX_NOISE_PER_SECOND = 100
@@ -25,7 +27,7 @@ CHECK_DEFINITIONS = (
     ("platform_linux", "required", "Linux"),
     ("affinity_requested_cpu_only", "required", "only the benchmark CPU"),
     ("cpu_online", "required", "benchmark CPU online"),
-    ("clocksource_current", "required", "tsc on x86; disclosed monotonic source otherwise"),
+    ("clocksource_current", "required", "architecture-approved available clocksource"),
     ("clocksource_tsc_available", "x86", "tsc listed as available"),
     ("tsc_constant", "x86", "constant_tsc flag present"),
     ("tsc_nonstop", "x86", "nonstop_tsc flag present"),
@@ -58,6 +60,10 @@ CHECK_DEFINITIONS = (
 
 
 class MalformedValue(ValueError):
+    pass
+
+
+class UnsafeFixturePath(OSError):
     pass
 
 
@@ -114,14 +120,62 @@ def parse_args(arguments: list[str] | None = None) -> argparse.Namespace:
 
 
 class Reader:
-    def __init__(self, root: pathlib.Path):
-        self.root = root
+    def __init__(self, root: pathlib.Path, fixture: bool = False):
+        self.fixture = fixture
+        self.root = root.resolve(strict=True) if fixture else root
+
+    def _checked(self, path: pathlib.Path) -> pathlib.Path:
+        if not self.fixture:
+            return path
+        try:
+            relative = path.relative_to(self.root)
+        except ValueError as error:
+            raise UnsafeFixturePath("fixture path escapes root") from error
+        if relative.is_absolute() or ".." in relative.parts:
+            raise UnsafeFixturePath("fixture path escapes root")
+        current = self.root
+        for component in relative.parts:
+            current = current / component
+            if stat.S_ISLNK(current.lstat().st_mode):
+                raise UnsafeFixturePath("fixture path contains symlink")
+        try:
+            path.resolve(strict=True).relative_to(self.root)
+        except ValueError as error:
+            raise UnsafeFixturePath("fixture path escapes root") from error
+        return path
 
     def text(self, relative: str) -> str:
-        return (self.root / relative).read_text(encoding="utf-8", errors="strict").strip()
+        path = pathlib.Path(relative)
+        if path.is_absolute() or ".." in path.parts:
+            raise UnsafeFixturePath("mapped path must remain relative")
+        return self.text_path(self.root / path)
+
+    def text_path(self, path: pathlib.Path) -> str:
+        return self._checked(path).read_text(encoding="utf-8", errors="strict").strip()
 
     def paths(self, pattern: str) -> list[pathlib.Path]:
-        return sorted(self.root.glob(pattern))
+        if not self.fixture:
+            return sorted(self.root.glob(pattern))
+        pattern_path = pathlib.Path(pattern)
+        if pattern_path.is_absolute() or ".." in pattern_path.parts:
+            raise UnsafeFixturePath("mapped pattern must remain relative")
+        candidates = [self.root]
+        for component in pattern_path.parts:
+            expanded: list[pathlib.Path] = []
+            for parent in candidates:
+                self._checked(parent)
+                if any(character in component for character in "*?["):
+                    for child in parent.iterdir():
+                        if fnmatch.fnmatchcase(child.name, component):
+                            expanded.append(self._checked(child))
+                else:
+                    child = parent / component
+                    try:
+                        expanded.append(self._checked(child))
+                    except FileNotFoundError:
+                        continue
+            candidates = expanded
+        return sorted(candidates)
 
     def logical_name(self, path: pathlib.Path) -> str:
         return "/" + path.relative_to(self.root).as_posix()
@@ -261,8 +315,9 @@ def build_report(benchmark_cpu: int, sample_seconds: int, fixture_root: pathlib.
                  sleep_fn: Callable[[float], None] = time.sleep) -> dict[str, object]:
     system = (platform_name or sys.platform).lower()
     machine = (architecture or platform.machine()).lower()
+    evidence_mode = "fixture" if fixture_root is not None else "live_host"
     root = fixture_root or pathlib.Path("/")
-    reader = Reader(root)
+    reader = Reader(root, fixture=fixture_root is not None)
     x86 = machine in {"x86_64", "amd64", "i386", "i686"}
     checks: list[dict[str, object]] = []
     linux = system == "linux"
@@ -278,6 +333,7 @@ def build_report(benchmark_cpu: int, sample_seconds: int, fixture_root: pathlib.
                                  "not available on non-Linux", "platform"))
         return {
             "schema_version": SCHEMA_VERSION,
+            "evidence_mode": evidence_mode,
             "platform": {"system": system, "architecture": machine},
             "benchmark_cpu": benchmark_cpu,
             "sample_seconds": sample_seconds,
@@ -308,19 +364,41 @@ def build_report(benchmark_cpu: int, sample_seconds: int, fixture_root: pathlib.
     # Clock source and architectural flags.
     current_path = "sys/devices/system/clocksource/clocksource0/current_clocksource"
     available_path = "sys/devices/system/clocksource/clocksource0/available_clocksource"
+    accepted_clocks = {
+        "x86_64": {"tsc"},
+        "amd64": {"tsc"},
+        "i386": {"tsc"},
+        "i686": {"tsc"},
+        "arm64": {"arch_sys_counter"},
+        "aarch64": {"arch_sys_counter"},
+    }.get(machine, set())
+    clock_expected = (
+        "one of " + ",".join(sorted(accepted_clocks)) + " and listed as available"
+        if accepted_clocks
+        else "no publication clocksource accepted for architecture"
+    )
     try:
         current = reader.text(current_path)
+        available_text = reader.text(available_path)
+        available = available_text.split()
+        token_pattern = r"[A-Za-z0-9_-]+"
+        valid = (
+            re.fullmatch(token_pattern, current) is not None
+            and bool(available)
+            and all(re.fullmatch(token_pattern, item) is not None for item in available)
+            and current in available
+            and current in accepted_clocks
+        )
         checks.append(_check("clocksource_current", "required",
-                             "pass" if current == "tsc" or not x86 else "fail",
-                             "tsc on x86; disclosed monotonic source otherwise", current,
-                             "/" + current_path))
+                             "pass" if valid else "fail", clock_expected,
+                             current or "empty", "/" + current_path + " and /" + available_path))
     except FileNotFoundError:
         checks.append(_check("clocksource_current", "required", "unavailable",
-                             "tsc on x86; disclosed monotonic source otherwise",
+                             clock_expected,
                              "file unavailable", "/" + current_path))
     except (OSError, UnicodeError):
         checks.append(_check("clocksource_current", "required", "fail",
-                             "tsc on x86; disclosed monotonic source otherwise",
+                             clock_expected,
                              "invalid", "/" + current_path))
     x86_severity = "required" if x86 else "advisory"
     if not x86:
@@ -343,7 +421,18 @@ def build_report(benchmark_cpu: int, sample_seconds: int, fixture_root: pathlib.
                                  "tsc listed as available", "invalid", "/" + available_path))
     try:
         cpuinfo = reader.text("proc/cpuinfo")
-        flag_lines = re.findall(r"^(?:flags|Features)\s*:\s*(.*)$", cpuinfo, re.MULTILINE)
+        selected_sections = []
+        for section in re.split(r"\n\s*\n", cpuinfo):
+            processors = re.findall(r"^processor\s*:\s*(\d+)\s*$", section, re.MULTILINE)
+            if len(processors) == 1 and int(processors[0]) == benchmark_cpu:
+                selected_sections.append(section)
+        if len(selected_sections) != 1:
+            raise MalformedValue("selected processor section unavailable")
+        flag_lines = re.findall(
+            r"^(?:flags|Features)\s*:\s*(.*)$",
+            selected_sections[0],
+            re.MULTILINE,
+        )
         if not flag_lines:
             raise MalformedValue("flags unavailable")
         flags = set().union(*(line.split() for line in flag_lines))
@@ -467,8 +556,15 @@ def build_report(benchmark_cpu: int, sample_seconds: int, fixture_root: pathlib.
     checks.append(_kernel_cpu_option(reader, "rcu_nocbs", "sys/devices/system/cpu/rcu_nocbs",
                                      benchmark_cpu))
 
-    irq_paths = reader.paths("proc/irq/*/effective_affinity_list")
-    if not irq_paths:
+    try:
+        irq_paths = reader.paths("proc/irq/*/effective_affinity_list")
+    except OSError:
+        irq_paths = None
+    if irq_paths is None:
+        checks.append(_check("irq_affinity_excludes_cpu", "required", "fail",
+                             "all effective IRQ affinities exclude benchmark CPU",
+                             "unsafe fixture path", "/proc/irq/*/effective_affinity_list"))
+    elif not irq_paths:
         checks.append(_check("irq_affinity_excludes_cpu", "required", "unavailable",
                              "all effective IRQ affinities exclude benchmark CPU",
                              "no effective affinity files", "/proc/irq/*/effective_affinity_list"))
@@ -477,7 +573,7 @@ def build_report(benchmark_cpu: int, sample_seconds: int, fixture_root: pathlib.
         malformed = False
         for path in irq_paths:
             try:
-                if benchmark_cpu in parse_cpu_list(path.read_text(encoding="utf-8").strip()):
+                if benchmark_cpu in parse_cpu_list(reader.text_path(path)):
                     overlap.append(path.parent.name)
             except (MalformedValue, OSError, UnicodeError):
                 malformed = True
@@ -547,11 +643,16 @@ def build_report(benchmark_cpu: int, sample_seconds: int, fixture_root: pathlib.
         checks.append(_check("memory_lock_limit", "required", "fail", "unlimited", "invalid",
                              "/proc/self/limits"))
 
-    numa_paths = reader.paths(f"{cpu_base}/node[0-9]*")
+    try:
+        numa_paths = reader.paths(f"{cpu_base}/node[0-9]*")
+    except OSError:
+        numa_paths = None
     checks.append(_check("numa_node_disclosure", "advisory",
+                         "fail" if numa_paths is None else
                          "pass" if len(numa_paths) == 1 else
                          "unavailable" if not numa_paths else "fail",
                          "NUMA node disclosed",
+                         "unsafe fixture path" if numa_paths is None else
                          numa_paths[0].name if len(numa_paths) == 1 else
                          "file unavailable" if not numa_paths else "multiple nodes",
                          f"/{cpu_base}/node*"))
@@ -569,10 +670,12 @@ def build_report(benchmark_cpu: int, sample_seconds: int, fixture_root: pathlib.
 
     check_order = {definition[0]: index for index, definition in enumerate(CHECK_DEFINITIONS)}
     checks.sort(key=lambda check: check_order[str(check["name"])])
-    qualified = all(check["status"] == "pass" for check in checks
-                    if check["severity"] == "required")
+    qualified = evidence_mode == "live_host" and all(
+        check["status"] == "pass" for check in checks if check["severity"] == "required"
+    )
     return {
         "schema_version": SCHEMA_VERSION,
+        "evidence_mode": evidence_mode,
         "platform": {"system": system, "architecture": machine},
         "benchmark_cpu": benchmark_cpu,
         "sample_seconds": sample_seconds,

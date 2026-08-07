@@ -17,8 +17,11 @@ taskset --cpu-list 2 scripts/verify-tuning.sh \
   --output benchmark-results/host-qualification.json
 ```
 
-The output is schema-versioned strict JSON.
-It contains the platform family and architecture, benchmark CPU, sample duration, qualification decision, and an ordered list of checks.
+The output is strict JSON under host-qualification schema version 2.
+It contains `evidence_mode`, the platform family and architecture, benchmark CPU, sample duration, qualification decision, and an ordered list of checks.
+Live reads use `evidence_mode: live_host`.
+Any use of `--fixture-root` or the internal fixture-root interface forces `evidence_mode: fixture`, `qualified: false`, and a nonzero exit even when every synthetic check passes.
+Fixture reports can test parsing and policy behavior but can never represent publishable host evidence.
 It intentionally excludes hostname, username, network addresses, serial numbers, and home-directory paths.
 The process exits zero only when every required check passes.
 Unavailable required evidence is a failure because missing evidence cannot support a publishable candidate.
@@ -27,6 +30,9 @@ On non-Linux systems the command writes a valid nonqualified report and exits no
 
 `--fixture-root` exists only for the fixture-driven test suite.
 It must never be used to qualify a real host.
+The fixture root is canonicalized once.
+Every mapped path is resolved and checked to remain below that root, and any symlink component is rejected even when its target remains inside the root.
+These checks constrain this read-only test interface but make no claim of eliminating filesystem TOCTOU races.
 CLI integers are complete base-10 values, the sample duration is bounded from 1 through 300 seconds, and paths containing parent traversal are rejected.
 
 ## Check meanings
@@ -35,8 +41,12 @@ CLI integers are complete base-10 values, the sample duration is bounded from 1 
 - `affinity_requested_cpu_only` requires the running verifier to have affinity to exactly the requested CPU.
 - `cpu_online` confirms that the requested CPU is in the kernel online set.
 - `clocksource_current` records the current kernel clocksource and requires TSC on x86.
+- On Linux arm64 and aarch64, `clocksource_current` requires `arch_sys_counter`.
+- The selected clocksource must be nonempty, architecture-approved, and present in a nonempty `available_clocksource` list.
+- Other architectures have no publication clocksource allow-list until an explicit architecture decision adds one.
 - `clocksource_tsc_available`, `tsc_constant`, and `tsc_nonstop` require the x86 timing facilities used by the benchmark clock contract.
 - `virtualization_disclosure` records whether the CPU flags disclose a hypervisor.
+- CPU flags and features come only from the selected benchmark CPU's `/proc/cpuinfo` processor section and are never unioned across heterogeneous CPUs.
 - `scaling_governor_performance` requires the performance governor.
 - The minimum, maximum, current, and fixed-frequency checks require readable numeric controls, an in-policy current frequency, and equal policy endpoints.
 - `turbo_policy_disclosure` records the exposed boost policy without assuming an architecture-specific sysfs file exists.
@@ -99,8 +109,8 @@ Zero durations and non-finite JSON values are rejected.
 The gate uses the minimum elapsed duration, equivalently maximum throughput, to reduce shared-runner interruption noise.
 Min-of-N is optimistically biased and must not be interpreted as expected sustained throughput.
 MAD remains visible to identify unstable jobs.
-The checked-in 1,000,000 operations-per-second floor is intentionally far below the observed local 76,841,802 operations per second.
-It is intended to catch gross regressions, accidental debug builds, or a broken hot path, not small performance changes.
+The checked-in 1,000,000 operations-per-second floor is a deliberately conservative policy value.
+It is intended to catch gross regressions, accidental debug builds, or a broken hot path, not support a performance claim or detect small changes.
 The 25 percent relative-MAD cap is the first-line noisy-runner limit.
 If public-runner history proves that cap flaky, widening it requires a documented follow-up change and retained dispersion reporting.
 

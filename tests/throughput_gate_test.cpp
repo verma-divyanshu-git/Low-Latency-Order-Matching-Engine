@@ -9,6 +9,10 @@
 namespace matching_engine::throughput_gate {
 namespace {
 
+TEST(ThroughputConfigTest, DefaultFloorMatchesCiPolicy) {
+  EXPECT_DOUBLE_EQ(Config{}.minimum_ops_per_second, 1'000'000.0);
+}
+
 TEST(ThroughputStatisticsTest, ComputesOddAndEvenMedianWithoutOverflow) {
   EXPECT_EQ(median({9U, 1U, 5U}), 5U);
   EXPECT_EQ(median({10U, 2U, 8U, 4U}), 6U);
