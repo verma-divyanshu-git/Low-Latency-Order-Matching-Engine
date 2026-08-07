@@ -111,6 +111,12 @@ void checksum_value(std::uint64_t& checksum, std::uint64_t value) noexcept {
   return scenario == Scenario::sweep_3_level ? 3U : 1U;
 }
 
+struct CapturedScenarioEvent {
+  SubmitResult result{RejectReason::invalid_handle, Quantity{0U}, Quantity{0U}, 0U, {}};
+  std::array<Trade, 3> trades{};
+  std::uint64_t submitted_event{std::numeric_limits<std::uint64_t>::max()};
+};
+
 class ScenarioWorkload {
 public:
   ScenarioWorkload(Scenario scenario, std::uint64_t events)
@@ -175,6 +181,50 @@ public:
     return true;
   }
 
+  void capture(std::uint64_t event, CapturedScenarioEvent& captured) const noexcept {
+    captured.result = last_result_;
+    captured.submitted_event = submitted_event_;
+    const auto trade_count = std::min<std::uint64_t>(makers_per_event(scenario_), 3U);
+    for (std::uint64_t index = 0U; index < trade_count; ++index) {
+      captured.trades[static_cast<std::size_t>(index)] = trades_[static_cast<std::size_t>(index)];
+    }
+    static_cast<void>(event);
+  }
+
+  [[nodiscard]] bool validate_captured(std::uint64_t event, const CapturedScenarioEvent& captured,
+                                       std::uint64_t& checksum) const noexcept {
+    if (!valid_ || event >= events_) {
+      return false;
+    }
+    const std::uint64_t maker_width = makers_per_event(scenario_);
+    const OrderId taker_id{maker_count_ + event + 1U};
+    const Quantity quantity{maker_width};
+    if (captured.submitted_event != event || captured.result.reject_reason != RejectReason::none ||
+        captured.result.executed_quantity != quantity ||
+        captured.result.unfilled_quantity != Quantity{0U} ||
+        captured.result.trade_count != maker_width) {
+      return false;
+    }
+    for (std::uint64_t trade_index = 0U; trade_index < maker_width; ++trade_index) {
+      const auto& trade = captured.trades[static_cast<std::size_t>(trade_index)];
+      const Price expected_price{
+          101 + static_cast<std::int64_t>(
+                    scenario_ == Scenario::sweep_3_level ? event * maker_width + trade_index : 0U)};
+      const OrderId expected_maker{scenario_ == Scenario::sweep_3_level
+                                       ? (event * maker_width) + trade_index + 1U
+                                       : event + 1U};
+      if (trade.buy_id != taker_id || trade.sell_id != expected_maker ||
+          trade.price != expected_price || trade.quantity != kUnitQuantity) {
+        return false;
+      }
+      checksum_value(checksum, trade.buy_id.value());
+      checksum_value(checksum, trade.sell_id.value());
+      checksum_value(checksum, static_cast<std::uint64_t>(trade.price.ticks()));
+      checksum_value(checksum, trade.quantity.value());
+    }
+    return true;
+  }
+
 private:
   [[nodiscard]] bool preload() noexcept {
     for (std::uint64_t event = 0U; event < events_; ++event) {
@@ -209,15 +259,24 @@ struct ScenarioOperation {
   ScenarioWorkload* workload{};
   std::uint64_t event_offset{};
   std::uint64_t* checksum{};
+  std::span<CapturedScenarioEvent> captured{};
 
   static void submit(void* context, std::uint64_t event) noexcept {
     auto& operation = *static_cast<ScenarioOperation*>(context);
     operation.workload->submit(operation.event_offset + event);
   }
 
+  static void capture(void* context, std::uint64_t event) noexcept {
+    auto& operation = *static_cast<ScenarioOperation*>(context);
+    operation.workload->capture(operation.event_offset + event,
+                                operation.captured[static_cast<std::size_t>(event)]);
+  }
+
   static bool validate(void* context, std::uint64_t event) noexcept {
     auto& operation = *static_cast<ScenarioOperation*>(context);
-    return operation.workload->validate(operation.event_offset + event, *operation.checksum);
+    return operation.workload->validate_captured(
+        operation.event_offset + event, operation.captured[static_cast<std::size_t>(event)],
+        *operation.checksum);
   }
 };
 
@@ -263,8 +322,12 @@ struct ScenarioOperation {
   return !output.fail();
 }
 
-void fill_histogram_summary(Summary& summary, const Histogram& histogram) {
+bool populate_histogram_summary_impl(Summary& summary, const Histogram& histogram) noexcept {
+  if (histogram.count() == 0U) {
+    return false;
+  }
   summary.count = histogram.count();
+  summary.valid_samples = histogram.count();
   summary.minimum_ns = histogram.minimum();
   summary.p50_ns = histogram.percentile(50.0);
   summary.p90_ns = histogram.percentile(90.0);
@@ -273,6 +336,7 @@ void fill_histogram_summary(Summary& summary, const Histogram& histogram) {
   summary.p99_99_ns = histogram.percentile(99.99);
   summary.maximum_ns = histogram.maximum();
   summary.mean_ns = histogram.mean();
+  return std::isfinite(summary.mean_ns);
 }
 
 void evaluate_publication(Summary& summary, std::uint64_t median_service_ticks) {
@@ -377,6 +441,10 @@ void clean_staging(ArtifactTransaction& transaction) noexcept {
 
 } // namespace
 
+bool populate_histogram_summary(Summary& summary, const Histogram& histogram) noexcept {
+  return populate_histogram_summary_impl(summary, histogram);
+}
+
 std::optional<std::vector<std::uint64_t>> make_schedule(std::uint64_t samples, std::uint64_t rate,
                                                         TickRatio ticks_per_nanosecond) {
   if (samples == 0U || samples > kMaximumSamples || rate == 0U ||
@@ -397,7 +465,8 @@ EventObservation observe_event(measurement::ClockSample intended, measurement::C
                                measurement::ClockSample completion,
                                measurement::ClockCapabilities capabilities) noexcept {
   EventObservation result{};
-  if (capabilities.migration_detection && start.cpu_aux != completion.cpu_aux) {
+  if (capabilities.migration_detection &&
+      (start.cpu_aux != intended.cpu_aux || completion.cpu_aux != intended.cpu_aux)) {
     result.status = measurement::ElapsedStatus::migrated;
     return result;
   }
@@ -434,8 +503,10 @@ measurement::ClockSample wait_until_intended(measurement::ClockReader clock,
     return clock.read == nullptr ? measurement::read_clock() : clock.read(clock.context);
   };
   auto current = read();
-  static_cast<void>(capabilities);
   while (current.ticks < intended.ticks) {
+    if (capabilities.migration_detection && current.cpu_aux != intended.cpu_aux) {
+      return current;
+    }
     current = read();
   }
   return current;
@@ -474,24 +545,42 @@ OperationResolution evaluate_operation_resolution(std::uint64_t effective_granul
   return {.threshold_ticks = threshold, .resolved = median_service_ticks >= threshold};
 }
 
-bool collect_open_loop(std::span<const std::uint64_t> schedule, measurement::ClockSample base,
-                       measurement::ClockReader clock, measurement::ClockCapabilities capabilities,
-                       double ticks_per_ns, OperationCallbacks operation, Histogram& latency,
-                       Histogram& service_ticks, OpenLoopStats& stats) noexcept {
-  if (schedule.empty() || operation.submit == nullptr || operation.validate == nullptr ||
-      !latency.valid() || !service_ticks.valid()) {
-    return false;
+OpenLoopStatus collect_open_loop(std::span<const std::uint64_t> schedule,
+                                 std::span<RawOpenLoopObservation> observations,
+                                 measurement::ClockSample base, measurement::ClockReader clock,
+                                 measurement::ClockCapabilities capabilities, double ticks_per_ns,
+                                 OperationCallbacks operation, Histogram& latency,
+                                 Histogram& service_ticks, OpenLoopStats& stats) noexcept {
+  if (schedule.empty() || observations.size() != schedule.size() || operation.submit == nullptr ||
+      operation.capture == nullptr || operation.validate == nullptr || !latency.valid() ||
+      !service_ticks.valid()) {
+    return OpenLoopStatus::invalid_configuration;
   }
   const auto read = [&clock] {
     return clock.read == nullptr ? measurement::read_clock() : clock.read(clock.context);
   };
+  const auto migrated = [&](measurement::ClockSample sample) {
+    return capabilities.migration_detection && sample.cpu_aux != base.cpu_aux;
+  };
+
   for (std::uint64_t index = 0U; index < schedule.size(); ++index) {
     std::uint64_t intended_ticks{};
     if (!checked_add(base.ticks, schedule[static_cast<std::size_t>(index)], intended_ticks)) {
-      return false;
+      return OpenLoopStatus::invalid_configuration;
     }
-    const measurement::ClockSample intended{intended_ticks, 0U};
-    const auto actual_start = wait_until_intended(clock, intended, capabilities);
+    const measurement::ClockSample intended{intended_ticks, base.cpu_aux};
+    const auto wait_sample = wait_until_intended(clock, intended, capabilities);
+    if (migrated(wait_sample)) {
+      ++stats.migration_samples;
+      ++stats.invalid_samples;
+      return OpenLoopStatus::cpu_migration;
+    }
+    const auto actual_start = read();
+    if (migrated(actual_start)) {
+      ++stats.migration_samples;
+      ++stats.invalid_samples;
+      return OpenLoopStatus::cpu_migration;
+    }
     operation.submit(operation.context, index);
     const auto completion = read();
     ++stats.executed_operations;
@@ -499,24 +588,38 @@ bool collect_open_loop(std::span<const std::uint64_t> schedule, measurement::Clo
       stats.first_completion_ticks = completion.ticks;
     }
     stats.last_completion_ticks = completion.ticks;
-    if (!operation.validate(operation.context, index)) {
-      return false;
+    if (migrated(completion)) {
+      ++stats.migration_samples;
+      ++stats.invalid_samples;
+      return OpenLoopStatus::cpu_migration;
     }
+    operation.capture(operation.context, index);
+    observations[static_cast<std::size_t>(index)] = {
+        .intended = intended,
+        .start = actual_start,
+        .completion = completion,
+    };
+  }
 
-    if (actual_start.ticks >= base.ticks) {
-      const auto elapsed_at_start = actual_start.ticks - base.ticks;
+  for (std::uint64_t index = 0U; index < schedule.size(); ++index) {
+    if (!operation.validate(operation.context, index)) {
+      return OpenLoopStatus::validation_failed;
+    }
+    const auto& raw = observations[static_cast<std::size_t>(index)];
+    if (raw.start.ticks >= base.ticks) {
+      const auto elapsed_at_start = raw.start.ticks - base.ticks;
       stats.max_backlog =
           std::max(stats.max_backlog, additional_backlog(schedule, index, elapsed_at_start));
     }
     std::uint64_t lateness_ns{};
-    if (actual_start.ticks >= intended.ticks) {
-      const auto lateness_ticks = actual_start.ticks - intended.ticks;
+    if (raw.start.ticks >= raw.intended.ticks) {
+      const auto lateness_ticks = raw.start.ticks - raw.intended.ticks;
       if (!measurement::ticks_to_nanoseconds(lateness_ticks, ticks_per_ns, lateness_ns)) {
-        return false;
+        return OpenLoopStatus::recording_failed;
       }
       stats.max_lateness_ns = std::max(stats.max_lateness_ns, lateness_ns);
     }
-    const auto observation = observe_event(intended, actual_start, completion, capabilities);
+    const auto observation = observe_event(raw.intended, raw.start, raw.completion, capabilities);
     if (observation.status == measurement::ElapsedStatus::backward) {
       ++stats.backward_samples;
       ++stats.invalid_samples;
@@ -525,16 +628,34 @@ bool collect_open_loop(std::span<const std::uint64_t> schedule, measurement::Clo
     if (observation.status == measurement::ElapsedStatus::migrated) {
       ++stats.migration_samples;
       ++stats.invalid_samples;
-      continue;
+      return OpenLoopStatus::cpu_migration;
     }
     std::uint64_t latency_ns{};
     if (!measurement::ticks_to_nanoseconds(observation.latency_ticks, ticks_per_ns, latency_ns) ||
         !latency.record(latency_ns) || !service_ticks.record(observation.service_ticks)) {
-      return false;
+      return OpenLoopStatus::recording_failed;
     }
     ++stats.valid_samples;
   }
-  return true;
+  return stats.valid_samples == 0U ? OpenLoopStatus::no_valid_samples : OpenLoopStatus::ok;
+}
+
+const char* open_loop_status_message(OpenLoopStatus status) noexcept {
+  switch (status) {
+  case OpenLoopStatus::ok:
+    return "ok";
+  case OpenLoopStatus::invalid_configuration:
+    return "invalid open-loop collection configuration";
+  case OpenLoopStatus::cpu_migration:
+    return "CPU migration detected; pin the benchmark process to one CPU and retry";
+  case OpenLoopStatus::validation_failed:
+    return "measured trade validation failed";
+  case OpenLoopStatus::recording_failed:
+    return "sample cannot be represented by histogram";
+  case OpenLoopStatus::no_valid_samples:
+    return "no valid latency samples remain";
+  }
+  return "unknown open-loop collection failure";
 }
 
 void Histogram::Deleter::operator()(hdr_histogram* histogram) const noexcept {
@@ -710,13 +831,17 @@ std::optional<MemoryPlan> benchmark_memory_plan(Scenario scenario, std::uint64_t
   std::uint64_t maker_bytes{};
   std::uint64_t price_bytes{};
   std::uint64_t schedule_bytes{};
+  std::uint64_t observation_bytes{};
   std::uint64_t planned_bytes{kHistogramStorageAllowance};
   if (!checked_multiply(maker_count, kPerMakerBytes, maker_bytes) ||
       !checked_multiply(price_level_count, kPerPriceLevelBytes, price_bytes) ||
       !checked_multiply(samples, sizeof(std::uint64_t), schedule_bytes) ||
+      !checked_multiply(samples, sizeof(RawOpenLoopObservation) + sizeof(CapturedScenarioEvent),
+                        observation_bytes) ||
       !checked_add(planned_bytes, maker_bytes, planned_bytes) ||
       !checked_add(planned_bytes, price_bytes, planned_bytes) ||
       !checked_add(planned_bytes, schedule_bytes, planned_bytes) ||
+      !checked_add(planned_bytes, observation_bytes, planned_bytes) ||
       planned_bytes > kBenchmarkMemoryBudgetBytes) {
     return std::nullopt;
   }
@@ -864,13 +989,30 @@ const char* claim_scope_name(ClaimScope scope) noexcept {
   return "regression_only";
 }
 
-std::string summary_json(const Summary& summary) {
+std::optional<std::string> summary_json(const Summary& summary) {
+  if (!std::isfinite(summary.mean_ns) || !std::isfinite(summary.achieved_completion_rate) ||
+      !std::isfinite(summary.clock_report.ticks_per_ns) ||
+      !std::isfinite(summary.clock_report.calibration_uncertainty)) {
+    return std::nullopt;
+  }
+  if (summary.mode == Mode::open_loop) {
+    std::uint64_t categorized_invalid{};
+    std::uint64_t accounted_samples{};
+    if (!checked_add(summary.backward_samples, summary.migration_samples, categorized_invalid) ||
+        !checked_add(summary.valid_samples, summary.invalid_samples, accounted_samples) ||
+        summary.count == 0U || summary.count != summary.valid_samples ||
+        summary.valid_samples > summary.executed_operations ||
+        summary.invalid_samples != categorized_invalid ||
+        accounted_samples != summary.executed_operations || summary.migration_samples != 0U) {
+      return std::nullopt;
+    }
+  }
   std::ostringstream output;
   output << std::setprecision(17) << '{' << "\"schema_version\":1,"
          << "\"mode\":\"" << mode_name(summary.mode) << "\","
          << "\"scenario\":\"" << scenario_name(summary.scenario) << "\","
-         << "\"count\":" << summary.count << ','
-         << "\"executed_operations\":" << summary.executed_operations << ','
+         << "\"count\":" << summary.count << ',' << "\"valid_samples\":" << summary.valid_samples
+         << ',' << "\"executed_operations\":" << summary.executed_operations << ','
          << "\"min_ns\":" << summary.minimum_ns << ',' << "\"p50_ns\":" << summary.p50_ns << ','
          << "\"p90_ns\":" << summary.p90_ns << ',' << "\"p99_ns\":" << summary.p99_ns << ','
          << "\"p99_9_ns\":" << summary.p99_9_ns << ',' << "\"p99_99_ns\":" << summary.p99_99_ns
@@ -911,7 +1053,7 @@ std::string summary_json(const Summary& summary) {
          << measurement::self_check_reason_name(summary.clock_report.self_check_reason) << "\","
          << "\"publication_reason\":\""
          << measurement::publication_reason_name(summary.clock_report.publication_reason) << "\"}}";
-  return output.str();
+  return output.good() ? std::optional<std::string>{output.str()} : std::nullopt;
 }
 
 std::optional<RunResult> run(const Config& config, std::string& error) {
@@ -971,7 +1113,10 @@ std::optional<RunResult> run(const Config& config, std::string& error) {
       error = "diagnostic histogram recording failed";
       return std::nullopt;
     }
-    fill_histogram_summary(result.summary, diagnostic.raw);
+    if (!populate_histogram_summary(result.summary, diagnostic.raw)) {
+      error = "diagnostic raw histogram contains no finite samples";
+      return std::nullopt;
+    }
     result.summary.executed_operations = config.samples;
     result.summary.duration_ns = std::accumulate(values.begin(), values.end(), std::uint64_t{0U});
     result.summary.checksum = kChecksumBasis;
@@ -986,8 +1131,17 @@ std::optional<RunResult> run(const Config& config, std::string& error) {
     result.summary.clock_report.publication_reason =
         measurement::PublicationReason::operation_not_evaluated;
     Summary corrected = result.summary;
-    fill_histogram_summary(corrected, diagnostic.corrected);
+    if (!populate_histogram_summary(corrected, diagnostic.corrected)) {
+      error = "diagnostic corrected histogram contains no finite samples";
+      return std::nullopt;
+    }
     result.corrected_summary = corrected;
+    const auto raw_json = summary_json(result.summary);
+    const auto corrected_json = summary_json(corrected);
+    if (!raw_json.has_value() || !corrected_json.has_value()) {
+      error = "diagnostic summary contains a non-finite number";
+      return std::nullopt;
+    }
 
     auto transaction = begin_artifact_transaction(config.output_dir, stem, error);
     if (!transaction.has_value()) {
@@ -999,12 +1153,11 @@ std::optional<RunResult> run(const Config& config, std::string& error) {
     const auto corrected_summary_name = stem + "-corrected-summary.json";
     const auto corrected_csv_name = stem + "-corrected-buckets.csv";
     const auto corrected_percentile_name = stem + "-corrected-percentiles.txt";
-    if (!write_text(transaction->staging_directory / raw_summary_name,
-                    summary_json(result.summary)) ||
+    if (!write_text(transaction->staging_directory / raw_summary_name, raw_json.value()) ||
         !write_histogram_csv(transaction->staging_directory / raw_csv_name, diagnostic.raw) ||
         !write_percentiles(transaction->staging_directory / raw_percentile_name, diagnostic.raw) ||
         !write_text(transaction->staging_directory / corrected_summary_name,
-                    summary_json(corrected)) ||
+                    corrected_json.value()) ||
         !write_histogram_csv(transaction->staging_directory / corrected_csv_name,
                              diagnostic.corrected) ||
         !write_percentiles(transaction->staging_directory / corrected_percentile_name,
@@ -1063,6 +1216,8 @@ std::optional<RunResult> run(const Config& config, std::string& error) {
     error = "maker preload failed";
     return std::nullopt;
   }
+  std::vector<RawOpenLoopObservation> observations(static_cast<std::size_t>(config.samples));
+  std::vector<CapturedScenarioEvent> captured(static_cast<std::size_t>(config.samples));
   std::uint64_t checksum = kChecksumBasis;
   for (std::uint64_t index = 0U; index < config.warmup; ++index) {
     workload.submit(index);
@@ -1074,12 +1229,15 @@ std::optional<RunResult> run(const Config& config, std::string& error) {
 
   const auto base = measurement::read_clock();
   const auto start_ns = measurement::read_steady_nanoseconds();
-  ScenarioOperation operation{&workload, config.warmup, &checksum};
+  ScenarioOperation operation{&workload, config.warmup, &checksum, captured};
   OpenLoopStats stats{};
-  if (!collect_open_loop(*schedule, base, {}, capabilities, clock_report.ticks_per_ns,
-                         {&operation, &ScenarioOperation::submit, &ScenarioOperation::validate},
-                         latency, service_ticks, stats)) {
-    error = "measured operation, validation, or sample recording failed";
+  const auto collection_status =
+      collect_open_loop(*schedule, observations, base, {}, capabilities, clock_report.ticks_per_ns,
+                        {&operation, &ScenarioOperation::submit, &ScenarioOperation::capture,
+                         &ScenarioOperation::validate},
+                        latency, service_ticks, stats);
+  if (collection_status != OpenLoopStatus::ok) {
+    error = open_loop_status_message(collection_status);
     return std::nullopt;
   }
   const auto end_ns = measurement::read_steady_nanoseconds();
@@ -1102,8 +1260,16 @@ std::optional<RunResult> run(const Config& config, std::string& error) {
   result.summary.migration_samples = stats.migration_samples;
   result.summary.invalid_samples = stats.invalid_samples;
   result.summary.checksum = checksum;
-  fill_histogram_summary(result.summary, latency);
+  if (!populate_histogram_summary(result.summary, latency)) {
+    error = "no valid finite latency samples remain";
+    return std::nullopt;
+  }
   evaluate_publication(result.summary, service_ticks.percentile(50.0));
+  const auto summary = summary_json(result.summary);
+  if (!summary.has_value()) {
+    error = "benchmark summary contains a non-finite number";
+    return std::nullopt;
+  }
 
   auto transaction = begin_artifact_transaction(config.output_dir, stem, error);
   if (!transaction.has_value()) {
@@ -1112,7 +1278,7 @@ std::optional<RunResult> run(const Config& config, std::string& error) {
   const auto summary_name = stem + "-summary.json";
   const auto csv_name = stem + "-raw-buckets.csv";
   const auto percentile_name = stem + "-raw-percentiles.txt";
-  if (!write_text(transaction->staging_directory / summary_name, summary_json(result.summary)) ||
+  if (!write_text(transaction->staging_directory / summary_name, summary.value()) ||
       !write_histogram_csv(transaction->staging_directory / csv_name, latency) ||
       !write_percentiles(transaction->staging_directory / percentile_name, latency)) {
     clean_staging(*transaction);

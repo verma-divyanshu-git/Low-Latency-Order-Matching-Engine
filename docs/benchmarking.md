@@ -26,23 +26,29 @@ The schedule uses checked integer rational arithmetic based on the requested eve
 All numerator and denominator factors are canceled before multiplication, and each absolute offset is rounded to the nearest tick with half-tick ties rounded upward.
 This avoids iterative drift and silent floor bias.
 The event loop waits only while it is early.
-AUX changes never end that wait because the invariant tick value governs intended arrival.
 A late event starts immediately.
+On x86, the schedule-base AUX identifies the run CPU.
+Every wait, immediate-start, and completion sample must report that same AUX.
+Any difference aborts the entire run before another event can execute, produces no successful artifact set, and reports that the process must be pinned to one CPU.
+Invariant TSC frequency does not prove that different CPUs have sufficiently synchronized counter offsets, so the harness never rebases or accepts a same-new-CPU interval.
 Reported latency is completion tick minus intended arrival tick, so queueing delay is retained.
 Scheduler lateness is actual start tick minus intended arrival tick.
-Backlog is the number of additional already-arrived events behind the event that is starting, so an unloaded on-time event has zero backlog.
-Maximum event backlog and maximum lateness are reported independently.
-The harness captures immediate pre-submit and immediate post-submit clock samples.
-An AUX difference between only those two samples discards only that event's latency and service observations, increments migration and invalid counts, and does not alter the remaining schedule.
+Harness arrival backlog is the number of additional already-arrived events behind the event that is starting, so an unloaded on-time event has zero backlog.
+It is not an engine queue-depth measurement.
+Maximum harness arrival backlog and maximum lateness are reported independently.
+The harness captures a wait sample, an immediate pre-submit sample, and an immediate post-submit completion sample.
 Backward samples are likewise discarded and counted.
 Open-loop samples are recorded only with `hdr_record_value`.
 Coordinated-omission correction is never applied to engine open-loop results.
 
-All maker orders, the fixed-capacity book, trade output, schedules, and histograms are allocated before the measured loop.
-Schedules and histograms are allocated before warmup, and warmup never enters recorded artifacts.
+All maker orders, the fixed-capacity book, trade output, schedules, raw observations, bounded result/trade captures, and histograms are allocated before warmup.
+Warmup never enters recorded artifacts.
 The timed operation is one aggressive IOC limit submission plus its matching work.
 The completion timestamp is captured immediately when `submit_limit` returns.
-Mandatory result and trade-shape validation and checksum work occur after that timestamp and are therefore excluded from service ticks.
+The arrival loop then copies only the fixed submission result and at most three trades into preallocated storage.
+After every scheduled event has completed, the harness validates all captured results and trade shapes, computes the checksum and harness arrival backlog/lateness, converts units, and populates histograms.
+The fixed post-completion copy is unavoidable single-thread generator overhead before the next arrival.
+Reported lateness and harness arrival backlog therefore include that copy, clock reads, waiting, and other single-thread driver overhead rather than representing engine-only queueing.
 
 Achieved completion rate uses every executed operation, including operations whose histogram samples were discarded.
 For at least two operations it is `(N - 1)` completion intervals divided by the elapsed time from the first completion through the last completion.
@@ -67,7 +73,7 @@ Disjoint groups are required because preloading multiple future makers at a shar
 Use `sweep-3-level` for the three-level workload.
 The CLI accepts complete positive base-10 integers only and caps samples at 1,000,000.
 It rejects unknown options, trailing text, parent traversal in output directories, incompatible diagnostic options, capacities that cannot be represented by the book, and plans above the 256 MiB benchmark memory budget.
-The plan conservatively includes schedule storage, trade output, order slots, price levels, occupancy support, and histogram allowance.
+The plan conservatively includes schedule storage, raw observations, bounded captures, trade output, order slots, price levels, occupancy support, and histogram allowance.
 The one-time allocation and maker preload remain outside warmup and timing because the core's conservative caller-provided `Trade` capacity contract is not weakened.
 
 ## Closed-loop coordinated-omission diagnostic
@@ -104,11 +110,14 @@ Percentile rows contain percentile rank, highest equivalent value, cumulative co
 Hdr values are quantized into equivalent ranges at the configured three-significant-digit precision, so the reported value is the highest value equivalent to that rank's bucket.
 Diagnostic runs write separately named raw and corrected versions of all three artifacts.
 
-JSON schema version 1 includes mode, scenario, valid histogram count, executed operations, min, p50, p90, p99, p99.9, p99.99, max, mean, requested rate, achieved completion rate, wall duration, completion interval, maximum backlog, maximum event lateness, backward, migration, and total invalid counts.
+JSON schema version 1 includes mode, scenario, valid histogram count, explicit valid samples, executed operations, min, p50, p90, p99, p99.9, p99.99, max, mean, requested rate, achieved completion rate, wall duration, completion interval, maximum harness arrival backlog, maximum event lateness, backward, migration, and total invalid counts.
 It also includes planned memory, integer operation median and resolution threshold ticks, effective granularity in ticks and nanoseconds, independent source and operation qualification reasons, checksum, nested clock report, and `claim_scope`.
+Successful open-loop JSON requires `count == valid_samples`, `valid_samples + invalid_samples == executed_operations`, consistent invalid categories, zero migration samples, and finite numeric fields.
+If no valid latency samples remain, the run fails before summary generation or artifact staging.
 The summary intentionally excludes hostname, username, and filesystem paths.
 `publishable_candidate` means only that the clock source and 10x effective-granularity gate passed.
 It is not publication approval and does not replace the environment disclosures required by ADR-0002.
+An x86 publishable candidate additionally requires OS-level CPU pinning documented with the environment disclosure.
 
 After collection, the observed median service ticks are compared with ten times the self-check's effective granularity.
 Operation resolution is evaluated even when the source is regression-only.
@@ -124,8 +133,9 @@ Failures clean staging with non-throwing filesystem error-code APIs.
 ## Explicit rate sweeps
 
 The sweep script accepts rates chosen by the user and does not infer saturation or choose a rate automatically.
-It validates exact integer fields and verifies mode, scenario, requested rate, and executed sample count against each invocation before graphing.
-It writes a combined CSV and creates a self-contained SVG with p50, p99, p99.9, and maximum backlog plots.
+One invocation accepts at most 32 unique rates from 1 through 1,000,000,000 and validates all of them before starting a subprocess or creating a rate directory.
+It allow-lists schema enum values, rejects booleans in numeric fields and non-finite JSON numbers, validates sample-accounting relationships, and verifies mode, scenario, requested rate, and executed sample count against each invocation before graphing.
+It writes a combined CSV and creates a self-contained SVG with p50, p99, p99.9, and maximum harness arrival-backlog plots.
 Regression-only points have a distinct hollow red style.
 Operation-unresolved points use a separate orange style and tooltip that states the effective quantization.
 

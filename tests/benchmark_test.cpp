@@ -39,14 +39,24 @@ struct MutableClock {
 struct TimedOperation {
   MutableClock* clock{};
   std::uint64_t validation_delay{};
+  std::uint64_t submit_count{};
+  std::uint64_t capture_count{};
+  std::uint64_t validation_count{};
 
   static void submit(void* context, std::uint64_t) noexcept {
     auto& operation = *static_cast<TimedOperation*>(context);
+    ++operation.submit_count;
     operation.clock->ticks += 10U;
+  }
+
+  static void capture(void* context, std::uint64_t) noexcept {
+    auto& operation = *static_cast<TimedOperation*>(context);
+    ++operation.capture_count;
   }
 
   static bool validate(void* context, std::uint64_t) noexcept {
     auto& operation = *static_cast<TimedOperation*>(context);
+    ++operation.validation_count;
     operation.clock->ticks += operation.validation_delay;
     return true;
   }
@@ -92,7 +102,7 @@ TEST(BenchmarkObservationTest, LateCompletionIncludesQueueingDelay) {
 TEST(BenchmarkObservationTest, FakeClockWaitsOnlyWhenEarlyAndNeverReschedulesLateEvent) {
   const measurement::ClockCapabilities capabilities{measurement::ClockSourceKind::x86_rdtscp, true,
                                                     true, true};
-  FakeClock early{{{90U, 1U}, {99U, 2U}, {105U, 2U}}};
+  FakeClock early{{{90U, 1U}, {99U, 1U}, {105U, 1U}}};
   const auto early_start =
       wait_until_intended({&early, &FakeClock::read}, {100U, 1U}, capabilities);
   EXPECT_EQ(early_start.ticks, 105U);
@@ -110,29 +120,77 @@ TEST(BenchmarkObservationTest, RejectsBackwardAndMigratedSamples) {
   EXPECT_EQ(observe_event({100U, 1U}, {99U, 1U}, {101U, 1U}, capabilities).status,
             measurement::ElapsedStatus::backward);
   EXPECT_EQ(observe_event({100U, 1U}, {101U, 2U}, {102U, 2U}, capabilities).status,
-            measurement::ElapsedStatus::valid);
+            measurement::ElapsedStatus::migrated);
   EXPECT_EQ(observe_event({100U, 1U}, {101U, 2U}, {102U, 3U}, capabilities).status,
             measurement::ElapsedStatus::migrated);
 }
 
-TEST(BenchmarkRunnerTest, PersistentMigrationDiscardsOnlyCrossCpuEventAndContinuesSchedule) {
+TEST(BenchmarkRunnerTest, MigrationBeforeIntendedTimeAbortsBeforeSubmit) {
   const measurement::ClockCapabilities capabilities{measurement::ClockSourceKind::x86_rdtscp, true,
                                                     true, true};
-  FakeClock clock{{{100U, 1U}, {110U, 2U}, {115U, 2U}, {125U, 2U}, {130U, 2U}}};
+  FakeClock clock{{{90U, 2U}}};
   MutableClock unused_clock{};
-  TimedOperation operation{&unused_clock, 0U};
+  TimedOperation operation{&unused_clock};
   Histogram latency{1U, 1'000'000U, 3};
   Histogram service{1U, 1'000'000U, 3};
   OpenLoopStats stats{};
+  std::array<RawOpenLoopObservation, 1> observations{};
+  const std::array<std::uint64_t, 1> schedule{10U};
+
+  EXPECT_EQ(collect_open_loop(schedule, observations, {100U, 1U}, {&clock, &FakeClock::read},
+                              capabilities, 1.0,
+                              {&operation, &TimedOperation::submit, &TimedOperation::capture,
+                               &TimedOperation::validate},
+                              latency, service, stats),
+            OpenLoopStatus::cpu_migration);
+  EXPECT_EQ(operation.submit_count, 0U);
+  EXPECT_EQ(latency.count(), 0U);
+}
+
+TEST(BenchmarkRunnerTest, MigrationAtImmediateStartAbortsBeforeSubmit) {
+  const measurement::ClockCapabilities capabilities{measurement::ClockSourceKind::x86_rdtscp, true,
+                                                    true, true};
+  FakeClock clock{{{100U, 1U}, {101U, 2U}}};
+  MutableClock unused_clock{};
+  TimedOperation operation{&unused_clock};
+  Histogram latency{1U, 1'000'000U, 3};
+  Histogram service{1U, 1'000'000U, 3};
+  OpenLoopStats stats{};
+  std::array<RawOpenLoopObservation, 1> observations{};
+  const std::array<std::uint64_t, 1> schedule{0U};
+
+  EXPECT_EQ(collect_open_loop(schedule, observations, {100U, 1U}, {&clock, &FakeClock::read},
+                              capabilities, 1.0,
+                              {&operation, &TimedOperation::submit, &TimedOperation::capture,
+                               &TimedOperation::validate},
+                              latency, service, stats),
+            OpenLoopStatus::cpu_migration);
+  EXPECT_EQ(operation.submit_count, 0U);
+}
+
+TEST(BenchmarkRunnerTest, MigrationDuringSubmitAbortsBeforeAnotherEvent) {
+  const measurement::ClockCapabilities capabilities{measurement::ClockSourceKind::x86_rdtscp, true,
+                                                    true, true};
+  FakeClock clock{{{100U, 1U}, {101U, 1U}, {110U, 2U}}};
+  MutableClock unused_clock{};
+  TimedOperation operation{&unused_clock};
+  Histogram latency{1U, 1'000'000U, 3};
+  Histogram service{1U, 1'000'000U, 3};
+  OpenLoopStats stats{};
+  std::array<RawOpenLoopObservation, 2> observations{};
   const std::array<std::uint64_t, 2> schedule{0U, 20U};
 
-  ASSERT_TRUE(collect_open_loop(schedule, {100U, 1U}, {&clock, &FakeClock::read}, capabilities, 1.0,
-                                {&operation, &TimedOperation::submit, &TimedOperation::validate},
-                                latency, service, stats));
-  EXPECT_EQ(stats.executed_operations, 2U);
-  EXPECT_EQ(stats.migration_samples, 1U);
-  EXPECT_EQ(stats.valid_samples, 1U);
-  EXPECT_EQ(clock.index, 5U);
+  EXPECT_EQ(collect_open_loop(schedule, observations, {100U, 1U}, {&clock, &FakeClock::read},
+                              capabilities, 1.0,
+                              {&operation, &TimedOperation::submit, &TimedOperation::capture,
+                               &TimedOperation::validate},
+                              latency, service, stats),
+            OpenLoopStatus::cpu_migration);
+  EXPECT_EQ(operation.submit_count, 1U);
+  EXPECT_EQ(operation.capture_count, 0U);
+  EXPECT_EQ(latency.count(), 0U);
+  EXPECT_STREQ(open_loop_status_message(OpenLoopStatus::cpu_migration),
+               "CPU migration detected; pin the benchmark process to one CPU and retry");
 }
 
 TEST(BenchmarkRunnerTest, CompletionTimestampExcludesMandatoryValidationDelay) {
@@ -143,14 +201,41 @@ TEST(BenchmarkRunnerTest, CompletionTimestampExcludesMandatoryValidationDelay) {
   Histogram latency{1U, 1'000'000U, 3};
   Histogram service{1U, 1'000'000U, 3};
   OpenLoopStats stats{};
+  std::array<RawOpenLoopObservation, 1> observations{};
   const std::array<std::uint64_t, 1> schedule{0U};
 
-  ASSERT_TRUE(collect_open_loop(
-      schedule, {100U, 0U}, {&clock, &MutableClock::read}, capabilities, 1.0,
-      {&operation, &TimedOperation::submit, &TimedOperation::validate}, latency, service, stats));
+  ASSERT_EQ(collect_open_loop(schedule, observations, {100U, 0U}, {&clock, &MutableClock::read},
+                              capabilities, 1.0,
+                              {&operation, &TimedOperation::submit, &TimedOperation::capture,
+                               &TimedOperation::validate},
+                              latency, service, stats),
+            OpenLoopStatus::ok);
   EXPECT_EQ(service.percentile(50.0), 10U);
   EXPECT_EQ(latency.percentile(50.0), 10U);
   EXPECT_EQ(clock.ticks, 1'110U);
+  EXPECT_EQ(operation.capture_count, 1U);
+  EXPECT_EQ(operation.validation_count, 1U);
+}
+
+TEST(BenchmarkRunnerTest, AllInvalidSamplesFailBeforeSummaryPublication) {
+  const measurement::ClockCapabilities capabilities{measurement::ClockSourceKind::steady_clock_ns,
+                                                    true, false, false};
+  FakeClock clock{{{100U, 0U}, {101U, 0U}, {99U, 0U}}};
+  MutableClock unused_clock{};
+  TimedOperation operation{&unused_clock};
+  Histogram latency{1U, 1'000'000U, 3};
+  Histogram service{1U, 1'000'000U, 3};
+  OpenLoopStats stats{};
+  std::array<RawOpenLoopObservation, 1> observations{};
+  const std::array<std::uint64_t, 1> schedule{0U};
+
+  EXPECT_EQ(collect_open_loop(schedule, observations, {100U, 0U}, {&clock, &FakeClock::read},
+                              capabilities, 1.0,
+                              {&operation, &TimedOperation::submit, &TimedOperation::capture,
+                               &TimedOperation::validate},
+                              latency, service, stats),
+            OpenLoopStatus::no_valid_samples);
+  EXPECT_EQ(latency.count(), 0U);
 }
 
 TEST(BenchmarkRunnerTest, BacklogExcludesCurrentlyStartingEvent) {
@@ -268,26 +353,33 @@ TEST(BenchmarkJsonTest, EmitsStrictRequiredFieldsWithoutEnvironmentIdentity) {
   summary.mode = Mode::open_loop;
   summary.scenario = Scenario::crossing_limit;
   summary.count = 2U;
+  summary.valid_samples = 2U;
   summary.executed_operations = 3U;
+  summary.invalid_samples = 1U;
+  summary.backward_samples = 1U;
   summary.claim_scope = ClaimScope::regression_only;
   summary.source_qualification_reason = "source_regression_only";
   summary.operation_resolution_reason = "operation_below_resolution";
   summary.operation_median_ticks = 42U;
   summary.operation_resolution_threshold_ticks = 410U;
-  const std::string json = summary_json(summary);
+  const auto json = summary_json(summary);
+  if (!json.has_value()) {
+    FAIL() << "expected finite summary JSON";
+    return;
+  }
 
-  EXPECT_NE(json.find("\"schema_version\":1"), std::string::npos);
-  EXPECT_NE(json.find("\"claim_scope\":\"regression_only\""), std::string::npos);
-  EXPECT_NE(json.find("\"clock_report\":"), std::string::npos);
-  EXPECT_NE(json.find("\"executed_operations\":3"), std::string::npos);
-  EXPECT_NE(json.find("\"source_qualification_reason\":\"source_regression_only\""),
+  EXPECT_NE(json.value().find("\"schema_version\":1"), std::string::npos);
+  EXPECT_NE(json.value().find("\"claim_scope\":\"regression_only\""), std::string::npos);
+  EXPECT_NE(json.value().find("\"clock_report\":"), std::string::npos);
+  EXPECT_NE(json.value().find("\"executed_operations\":3"), std::string::npos);
+  EXPECT_NE(json.value().find("\"source_qualification_reason\":\"source_regression_only\""),
             std::string::npos);
-  EXPECT_NE(json.find("\"operation_resolution_reason\":\"operation_below_resolution\""),
+  EXPECT_NE(json.value().find("\"operation_resolution_reason\":\"operation_below_resolution\""),
             std::string::npos);
-  EXPECT_NE(json.find("\"effective_granularity_ns\":"), std::string::npos);
-  EXPECT_EQ(json.find("hostname"), std::string::npos);
-  EXPECT_EQ(json.find("username"), std::string::npos);
-  EXPECT_EQ(json.find(",}"), std::string::npos);
+  EXPECT_NE(json.value().find("\"effective_granularity_ns\":"), std::string::npos);
+  EXPECT_EQ(json.value().find("hostname"), std::string::npos);
+  EXPECT_EQ(json.value().find("username"), std::string::npos);
+  EXPECT_EQ(json.value().find(",}"), std::string::npos);
 }
 
 TEST(BenchmarkJsonTest, DiagnosticIsTopLevelOnlyAndLeavesClockOperationUnevaluated) {
@@ -297,11 +389,28 @@ TEST(BenchmarkJsonTest, DiagnosticIsTopLevelOnlyAndLeavesClockOperationUnevaluat
   summary.clock_report.operation_evaluated = false;
   summary.clock_report.operation_percentiles_publishable = false;
   summary.clock_report.publication_reason = measurement::PublicationReason::operation_not_evaluated;
-  const std::string json = summary_json(summary);
+  const auto json = summary_json(summary);
+  if (!json.has_value()) {
+    FAIL() << "expected finite diagnostic JSON";
+    return;
+  }
 
-  EXPECT_NE(json.find("\"claim_scope\":\"diagnostic_only\""), std::string::npos);
-  EXPECT_NE(json.find("\"operation_evaluated\":false"), std::string::npos);
-  EXPECT_NE(json.find("\"publication_reason\":\"operation_not_evaluated\""), std::string::npos);
+  EXPECT_NE(json.value().find("\"claim_scope\":\"diagnostic_only\""), std::string::npos);
+  EXPECT_NE(json.value().find("\"operation_evaluated\":false"), std::string::npos);
+  EXPECT_NE(json.value().find("\"publication_reason\":\"operation_not_evaluated\""),
+            std::string::npos);
+}
+
+TEST(BenchmarkJsonTest, RejectsNonFiniteNumbersAndEmptyHistograms) {
+  Summary summary{};
+  EXPECT_FALSE(summary_json(summary).has_value());
+
+  summary.mean_ns = std::numeric_limits<double>::infinity();
+  EXPECT_FALSE(summary_json(summary).has_value());
+
+  Histogram empty{1U, 1'000'000U, 3};
+  EXPECT_EQ(empty.count(), 0U);
+  EXPECT_FALSE(populate_histogram_summary(summary, empty));
 }
 
 TEST(BenchmarkMemoryTest, ReportsPlanAndRejectsRunsAboveCiBudget) {

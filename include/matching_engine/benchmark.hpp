@@ -142,7 +142,23 @@ benchmark_memory_plan(Scenario scenario, std::uint64_t samples, std::uint64_t wa
 struct OperationCallbacks {
   void* context{};
   void (*submit)(void*, std::uint64_t) noexcept {};
+  void (*capture)(void*, std::uint64_t) noexcept {};
   bool (*validate)(void*, std::uint64_t) noexcept {};
+};
+
+struct RawOpenLoopObservation {
+  measurement::ClockSample intended{};
+  measurement::ClockSample start{};
+  measurement::ClockSample completion{};
+};
+
+enum class OpenLoopStatus : std::uint8_t {
+  ok,
+  invalid_configuration,
+  cpu_migration,
+  validation_failed,
+  recording_failed,
+  no_valid_samples,
 };
 
 struct OpenLoopStats {
@@ -157,12 +173,13 @@ struct OpenLoopStats {
   std::uint64_t last_completion_ticks{};
 };
 
-[[nodiscard]] bool collect_open_loop(std::span<const std::uint64_t> schedule,
-                                     measurement::ClockSample base, measurement::ClockReader clock,
-                                     measurement::ClockCapabilities capabilities,
-                                     double ticks_per_ns, OperationCallbacks operation,
-                                     Histogram& latency, Histogram& service_ticks,
-                                     OpenLoopStats& stats) noexcept;
+[[nodiscard]] OpenLoopStatus
+collect_open_loop(std::span<const std::uint64_t> schedule,
+                  std::span<RawOpenLoopObservation> observations, measurement::ClockSample base,
+                  measurement::ClockReader clock, measurement::ClockCapabilities capabilities,
+                  double ticks_per_ns, OperationCallbacks operation, Histogram& latency,
+                  Histogram& service_ticks, OpenLoopStats& stats) noexcept;
+[[nodiscard]] const char* open_loop_status_message(OpenLoopStatus status) noexcept;
 
 struct OperationResolution {
   std::uint64_t threshold_ticks{};
@@ -192,6 +209,7 @@ struct Summary {
   Mode mode{Mode::open_loop};
   Scenario scenario{Scenario::none};
   std::uint64_t count{};
+  std::uint64_t valid_samples{};
   std::uint64_t executed_operations{};
   std::uint64_t minimum_ns{};
   std::uint64_t p50_ns{};
@@ -221,7 +239,9 @@ struct Summary {
   measurement::SelfCheckReport clock_report{};
 };
 
-[[nodiscard]] std::string summary_json(const Summary& summary);
+[[nodiscard]] bool populate_histogram_summary(Summary& summary,
+                                              const Histogram& histogram) noexcept;
+[[nodiscard]] std::optional<std::string> summary_json(const Summary& summary);
 [[nodiscard]] const char* mode_name(Mode mode) noexcept;
 [[nodiscard]] const char* scenario_name(Scenario scenario) noexcept;
 [[nodiscard]] const char* claim_scope_name(ClaimScope scope) noexcept;

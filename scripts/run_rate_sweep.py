@@ -12,15 +12,23 @@ from pathlib import Path
 from typing import Any
 
 
+MAXIMUM_RATES = 32
+MAXIMUM_RATE = 1_000_000_000
+
 REQUIRED_FIELDS = {
     "schema_version",
     "mode",
     "scenario",
     "count",
+    "valid_samples",
     "executed_operations",
+    "invalid_samples",
+    "backward_samples",
+    "migration_samples",
     "p50_ns",
     "p99_ns",
     "p99_9_ns",
+    "mean_ns",
     "requested_rate",
     "achieved_completion_rate",
     "max_backlog",
@@ -29,6 +37,33 @@ REQUIRED_FIELDS = {
     "operation_resolution_reason",
     "effective_granularity_ns",
 }
+
+
+def validate_rates(rates: list[int]) -> list[int]:
+    if not rates:
+        raise ValueError("at least one rate is required")
+    if len(rates) > MAXIMUM_RATES:
+        raise ValueError(f"at most {MAXIMUM_RATES} rates are allowed")
+    if len(set(rates)) != len(rates):
+        raise ValueError("rates must be unique")
+    if any(type(rate) is not int or rate <= 0 or rate > MAXIMUM_RATE for rate in rates):
+        raise ValueError(f"rates must be integers from 1 through {MAXIMUM_RATE}")
+    return rates
+
+
+def _reject_nonfinite_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON number: {value}")
+
+
+def _require_finite_floats(value: Any, path: str = "summary") -> None:
+    if type(value) is float and not math.isfinite(value):
+        raise ValueError(f"{path}: floating-point value must be finite")
+    if isinstance(value, dict):
+        for key, child in value.items():
+            _require_finite_floats(child, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _require_finite_floats(child, f"{path}[{index}]")
 
 
 def escape_xml(value: str) -> str:
@@ -44,17 +79,33 @@ def escape_xml(value: str) -> str:
 def load_summary(
     path: Path, expected_scenario: str, expected_rate: int, expected_samples: int
 ) -> dict[str, Any]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(
+        path.read_text(encoding="utf-8"), parse_constant=_reject_nonfinite_constant
+    )
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: summary must be a JSON object")
+    _require_finite_floats(data)
     missing = REQUIRED_FIELDS.difference(data)
     if missing:
         raise ValueError(f"{path}: missing fields: {', '.join(sorted(missing))}")
-    if data["schema_version"] != 1 or data["mode"] != "open-loop":
+    if type(data["schema_version"]) is not int or data["schema_version"] != 1:
+        raise ValueError(f"{path}: unsupported schema")
+    if data["mode"] not in {"open-loop"}:
         raise ValueError(f"{path}: unsupported schema or mode")
     if data["claim_scope"] not in {"regression_only", "publishable_candidate"}:
         raise ValueError(f"{path}: invalid claim_scope")
+    if data["operation_resolution_reason"] not in {
+        "qualified",
+        "operation_below_resolution",
+    }:
+        raise ValueError(f"{path}: invalid operation_resolution_reason")
     integer_fields = (
         "count",
+        "valid_samples",
         "executed_operations",
+        "invalid_samples",
+        "backward_samples",
+        "migration_samples",
         "p50_ns",
         "p99_ns",
         "p99_9_ns",
@@ -71,6 +122,21 @@ def load_summary(
         raise ValueError(f"{path}: achieved_completion_rate must be numeric")
     if not math.isfinite(float(achieved_rate)) or achieved_rate < 0:
         raise ValueError(f"{path}: achieved_completion_rate must be finite and non-negative")
+    mean_ns = data["mean_ns"]
+    if isinstance(mean_ns, bool) or not isinstance(mean_ns, (int, float)) or mean_ns < 0:
+        raise ValueError(f"{path}: mean_ns must be finite and non-negative")
+    if data["requested_rate"] == 0 or data["requested_rate"] > MAXIMUM_RATE:
+        raise ValueError(f"{path}: requested_rate is out of range")
+    if data["count"] != data["valid_samples"]:
+        raise ValueError(f"{path}: count must equal valid_samples")
+    if data["count"] > data["executed_operations"]:
+        raise ValueError(f"{path}: count cannot exceed executed_operations")
+    if data["valid_samples"] + data["invalid_samples"] != data["executed_operations"]:
+        raise ValueError(f"{path}: valid and invalid samples must equal executed_operations")
+    if data["backward_samples"] + data["migration_samples"] != data["invalid_samples"]:
+        raise ValueError(f"{path}: invalid sample categories are inconsistent")
+    if data["migration_samples"] != 0:
+        raise ValueError(f"{path}: successful open-loop summaries cannot contain migration")
     expected = {
         "mode": "open-loop",
         "scenario": expected_scenario,
@@ -97,7 +163,7 @@ def render_svg(summaries: list[dict[str, Any]], title: str) -> str:
         ("p50_ns", "p50 latency (ns)"),
         ("p99_ns", "p99 latency (ns)"),
         ("p99_9_ns", "p99.9 latency (ns)"),
-        ("max_backlog", "max backlog (events)"),
+        ("max_backlog", "max harness arrival backlog (events)"),
     ]
     rates = [float(item["requested_rate"]) for item in summaries]
     x_low, x_high = min(rates), max(rates)
@@ -173,12 +239,14 @@ def main() -> int:
     args = parser.parse_args()
     if args.samples <= 0 or args.samples > 1_000_000 or args.warmup <= 0:
         parser.error("samples and warmup must be positive; samples cannot exceed 1000000")
-    if any(rate <= 0 for rate in args.rates):
-        parser.error("rates must be positive")
+    try:
+        rates = validate_rates(args.rates)
+    except ValueError as error:
+        parser.error(str(error))
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     summaries = []
-    for rate in args.rates:
+    for rate in rates:
         run_dir = args.output_dir / f"rate-{rate}"
         completed = subprocess.run(
             [
@@ -213,6 +281,8 @@ def main() -> int:
         "requested_rate",
         "achieved_completion_rate",
         "count",
+        "valid_samples",
+        "invalid_samples",
         "executed_operations",
         "p50_ns",
         "p99_ns",
