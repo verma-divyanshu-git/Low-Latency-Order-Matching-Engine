@@ -10,13 +10,26 @@ include(CTest)
 include(cmake/ProjectOptions.cmake)
 engine_validate_options()
 
-add_library(matching_engine_core STATIC src/order_book.cpp)
+add_library(
+  matching_engine_core STATIC
+  src/command.cpp
+  src/order_book.cpp
+  src/sequenced_engine.cpp)
 add_library(matching_engine::core ALIAS matching_engine_core)
 target_include_directories(
   matching_engine_core
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
          $<INSTALL_INTERFACE:include>)
 engine_configure_target(matching_engine_core)
+
+add_library(matching_engine_persistence STATIC src/journal.cpp)
+add_library(matching_engine::persistence ALIAS matching_engine_persistence)
+target_include_directories(
+  matching_engine_persistence
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+         $<INSTALL_INTERFACE:include>)
+target_link_libraries(matching_engine_persistence PUBLIC matching_engine::core)
+engine_configure_target(matching_engine_persistence)
 
 if(PROJECT_IS_TOP_LEVEL)
   set(ENGINE_BUILD_TESTS_DEFAULT ON)
@@ -106,6 +119,7 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
 
   add_executable(
     matching_engine_core_tests
+    tests/command_engine_test.cpp
     tests/invariant_test.cpp
     tests/order_arena_test.cpp
     tests/order_book_differential_test.cpp
@@ -117,6 +131,12 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
 
   include(GoogleTest)
   gtest_discover_tests(matching_engine_core_tests)
+
+  add_executable(matching_engine_persistence_tests tests/journal_test.cpp)
+  target_link_libraries(
+    matching_engine_persistence_tests PRIVATE matching_engine::persistence GTest::gtest_main)
+  engine_configure_target(matching_engine_persistence_tests)
+  gtest_discover_tests(matching_engine_persistence_tests)
 
   if(ENGINE_BUILD_BENCHMARKS)
     add_executable(

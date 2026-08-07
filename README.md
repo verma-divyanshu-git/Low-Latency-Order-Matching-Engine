@@ -20,8 +20,10 @@ This increases defensive test coverage but does not prove correctness or imply t
 Phase 3A adds a benchmark-only portable clock library and startup self-check that can refuse unresolved measurements.
 Phase 3B adds a benchmark-only open-loop order-book harness, atomic raw HdrHistogram artifact sets with explicit resolution refusal fields, explicit rate sweeps, and a bounded separate synthetic coordinated-omission diagnostic.
 Phase 3C adds report-only Linux host qualification and a separate batch-amortized noisy-CI throughput regression gate with no latency claims.
+Phase 4A adds canonical fixed command bytes, caller-clocked sequencing, deterministic fixed event output, and a separate fixed-capacity memory-mapped command journal for macOS and Linux.
+Recovery detects torn or corrupt committed records and replays decoded command values without exposing mapping pointers.
+The journal has no snapshot, compaction, rotation, replication, or cryptographic authentication.
 Steady-clock fallback can pass clock safety for local regression use but is always marked non-publishable.
-Gateway sequencing and process-boundary interfaces are not implemented yet.
 No latency or throughput claims should be inferred from this repository.
 
 ## Planned architecture
@@ -83,7 +85,9 @@ Run `./build/measurement/clock_probe --samples 10000 --calibration-ms 10` to emi
 The JSON separates `clock_safe` from `operation_percentiles_publishable`; a zero exit status does not imply publishable latency evidence.
 The [benchmarking guide](docs/benchmarking.md) defines open-loop scheduling, workloads, artifacts, diagnostics, and reproduction commands.
 The [host qualification guide](docs/host-qualification.md) defines Linux environment evidence and the CI-only batch throughput gate.
-The core target does not link measurement code, and `ENGINE_BUILD_BENCHMARKS` defaults to `OFF`.
+The core target does not link measurement or persistence code, and `ENGINE_BUILD_BENCHMARKS` defaults to `OFF`.
+Applications opt into command persistence by linking `matching_engine::persistence`.
+The [journaling guide](docs/journaling.md) specifies canonical bytes, append-before-apply ordering, recovery, and durability limits.
 
 ## Benchmark contract
 
@@ -102,7 +106,7 @@ Future benchmark reports will:
 ## Limitations and non-goals
 
 - This is not production-ready trading software.
-- Persistence, recovery, networking, risk checks, authentication, authorization, administration, and operational monitoring are not implemented.
+- Command-journal persistence and recovery are implemented, but snapshots, compaction, networking, risk checks, authentication, authorization, administration, and operational monitoring are not.
 - Duplicate order identifiers are not detected by the matching core and must be rejected by a future gateway.
 - Structural invariant checks do not prove volume conservation by themselves; the differential driver checks an independent conservation ledger, while self-trade prevention remains unimplemented.
 - Each order book requires exclusive access by one matching thread; concurrent calls are unsupported.
@@ -122,6 +126,7 @@ Future benchmark reports will:
 - [Measurement clock self-check](docs/measurement.md)
 - [Order-book benchmarking methodology](docs/benchmarking.md)
 - [Linux host qualification and CI throughput gate](docs/host-qualification.md)
+- [Deterministic sequencing and command journaling](docs/journaling.md)
 - [Primary references](docs/references.md)
 - [Security policy](SECURITY.md)
 
