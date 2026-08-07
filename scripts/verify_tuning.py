@@ -481,25 +481,40 @@ def build_report(benchmark_cpu: int, sample_seconds: int, fixture_root: pathlib.
         checks.append(_check("scaling_governor_performance", "required", "fail",
                              "performance", "invalid", "/" + governor_path))
     frequency_values: dict[str, int | None] = {}
+    frequency_statuses: dict[str, str] = {}
     for name, filename in (("frequency_min_control", "scaling_min_freq"),
                            ("frequency_max_control", "scaling_max_freq"),
                            ("frequency_current_control", "scaling_cur_freq")):
         relative = f"{cpu_base}/cpufreq/{filename}"
         value, observed = _read_integer(reader, relative)
         frequency_values[name] = value
-        checks.append(_check(name, "required",
-                             "unavailable" if value is None and observed == "file unavailable"
-                             else "pass" if value is not None and value > 0 else "fail",
-                             "positive numeric frequency", observed, "/" + relative))
+        status = (
+            "unavailable" if value is None and observed == "file unavailable"
+            else "pass" if value is not None and value > 0 else "fail"
+        )
+        frequency_statuses[name] = status
+        checks.append(_check(name, "required", status, "positive numeric frequency", observed,
+                             "/" + relative))
     minimum = frequency_values["frequency_min_control"]
     maximum = frequency_values["frequency_max_control"]
     current = frequency_values["frequency_current_control"]
     current_check = next(check for check in checks if check["name"] == "frequency_current_control")
-    if minimum is not None and maximum is not None and current is not None:
-        current_check["status"] = "pass" if minimum <= current <= maximum else "fail"
-        current_check["expected"] = "current frequency within minimum and maximum"
-    fixed_status = "unavailable" if minimum is None or maximum is None else (
-        "pass" if minimum == maximum else "fail"
+    bound_statuses = (
+        frequency_statuses["frequency_min_control"],
+        frequency_statuses["frequency_max_control"],
+    )
+    if frequency_statuses["frequency_current_control"] == "pass":
+        if "fail" in bound_statuses:
+            current_check["status"] = "fail"
+        elif "unavailable" in bound_statuses:
+            current_check["status"] = "unavailable"
+        else:
+            current_check["status"] = "pass" if minimum <= current <= maximum else "fail"
+    current_check["expected"] = "current frequency within valid positive minimum and maximum"
+    fixed_status = (
+        "fail" if "fail" in bound_statuses
+        else "unavailable" if "unavailable" in bound_statuses
+        else "pass" if minimum == maximum else "fail"
     )
     checks.append(_check("frequency_fixed_policy", "required", fixed_status,
                          "minimum frequency equals maximum frequency",

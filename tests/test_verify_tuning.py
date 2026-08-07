@@ -210,6 +210,95 @@ class VerifyTuningTest(unittest.TestCase):
         self.assertEqual(checks["perf_event_access"]["status"], "pass")
         self.assertFalse(report["qualified"])
 
+    def test_current_frequency_is_unavailable_when_a_bound_is_missing(self):
+        for filename in ("scaling_min_freq", "scaling_max_freq"):
+            with self.subTest(filename=filename):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = pathlib.Path(directory)
+                    qualified_fixture(root)
+                    (root / f"sys/devices/system/cpu/cpu2/cpufreq/{filename}").unlink()
+                    report = self.report(root)
+
+                checks = {check["name"]: check for check in report["checks"]}
+                self.assertEqual(
+                    checks["frequency_current_control"]["status"],
+                    "unavailable",
+                )
+
+    def test_current_frequency_fails_when_a_bound_is_malformed(self):
+        for filename in ("scaling_min_freq", "scaling_max_freq"):
+            with self.subTest(filename=filename):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = pathlib.Path(directory)
+                    qualified_fixture(root)
+                    write(
+                        root,
+                        f"sys/devices/system/cpu/cpu2/cpufreq/{filename}",
+                        "invalid\n",
+                    )
+                    report = self.report(root)
+
+                checks = {check["name"]: check for check in report["checks"]}
+                self.assertEqual(
+                    checks["frequency_current_control"]["status"],
+                    "fail",
+                )
+
+    def test_missing_frequency_controls_remain_unavailable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            qualified_fixture(root)
+            for filename in (
+                "scaling_min_freq",
+                "scaling_max_freq",
+                "scaling_cur_freq",
+            ):
+                (root / f"sys/devices/system/cpu/cpu2/cpufreq/{filename}").unlink()
+            report = self.report(root, architecture="arm64")
+
+        checks = {check["name"]: check for check in report["checks"]}
+        for name in (
+            "frequency_min_control",
+            "frequency_max_control",
+            "frequency_current_control",
+            "frequency_fixed_policy",
+        ):
+            self.assertEqual(checks[name]["status"], "unavailable")
+
+    def test_current_frequency_fails_for_inverted_bounds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            qualified_fixture(root)
+            write(root, "sys/devices/system/cpu/cpu2/cpufreq/scaling_min_freq", "4000\n")
+            write(root, "sys/devices/system/cpu/cpu2/cpufreq/scaling_max_freq", "3000\n")
+            write(root, "sys/devices/system/cpu/cpu2/cpufreq/scaling_cur_freq", "3500\n")
+            report = self.report(root)
+
+        checks = {check["name"]: check for check in report["checks"]}
+        self.assertEqual(checks["frequency_current_control"]["status"], "fail")
+
+    def test_current_frequency_requires_inclusive_bounds(self):
+        for current, expected in ((1999, "fail"), (2000, "pass"), (3000, "pass"),
+                                  (4000, "pass"), (4001, "fail")):
+            with self.subTest(current=current):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = pathlib.Path(directory)
+                    qualified_fixture(root)
+                    write(root, "sys/devices/system/cpu/cpu2/cpufreq/scaling_min_freq", "2000\n")
+                    write(root, "sys/devices/system/cpu/cpu2/cpufreq/scaling_max_freq", "4000\n")
+                    write(
+                        root,
+                        "sys/devices/system/cpu/cpu2/cpufreq/scaling_cur_freq",
+                        f"{current}\n",
+                    )
+                    report = self.report(root)
+
+                checks = {check["name"]: check for check in report["checks"]}
+                self.assertEqual(
+                    checks["frequency_current_control"]["status"],
+                    expected,
+                )
+
     def test_fixture_reader_rejects_symlink_escape(self):
         with tempfile.TemporaryDirectory() as directory:
             parent = pathlib.Path(directory)

@@ -49,6 +49,7 @@ CLI integers are complete base-10 values, the sample duration is bounded from 1 
 - CPU flags and features come only from the selected benchmark CPU's `/proc/cpuinfo` processor section and are never unioned across heterogeneous CPUs.
 - `scaling_governor_performance` requires the performance governor.
 - The minimum, maximum, current, and fixed-frequency checks require readable numeric controls, an in-policy current frequency, and equal policy endpoints.
+- The current-frequency check can pass only when all three controls are valid positive integers and the current value is within the inclusive minimum-to-maximum range.
 - `turbo_policy_disclosure` records the exposed boost policy without assuming an architecture-specific sysfs file exists.
 - `smt_sibling_isolation` requires no other online thread in the benchmark CPU's sibling set.
 - `isolcpus`, `nohz_full`, and `rcu_nocbs` require the benchmark CPU in the corresponding kernel isolation sets.
