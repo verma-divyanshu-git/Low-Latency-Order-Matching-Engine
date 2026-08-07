@@ -31,8 +31,15 @@ class RateSweepTest(unittest.TestCase):
             "max_backlog": 0,
             "max_lateness_ns": 2,
             "claim_scope": "regression_only",
+            "source_qualification_reason": "source_regression_only",
             "operation_resolution_reason": "operation_below_resolution",
             "effective_granularity_ns": 41,
+            "clock_report": {
+                "source_publishable": False,
+                "operation_evaluated": True,
+                "operation_percentiles_publishable": False,
+                "publication_reason": "source_regression_only",
+            },
         }
 
     def test_escape_xml_is_deterministic(self):
@@ -100,6 +107,103 @@ class RateSweepTest(unittest.TestCase):
             path.write_text(json.dumps(summary), encoding="utf-8")
             with self.assertRaises(ValueError):
                 load_summary(path, "crossing-limit", 1000, 10)
+
+    def test_load_summary_rejects_zero_count_and_contradictory_qualification(self):
+        hostile = []
+
+        zero_count = self.summary()
+        zero_count.update(
+            count=0,
+            valid_samples=0,
+            invalid_samples=10,
+            backward_samples=10,
+        )
+        hostile.append(zero_count)
+
+        publishable_source_refused = self.summary()
+        publishable_source_refused["claim_scope"] = "publishable_candidate"
+        hostile.append(publishable_source_refused)
+
+        mismatched_source_reason = self.summary()
+        mismatched_source_reason["source_qualification_reason"] = "qualified"
+        hostile.append(mismatched_source_reason)
+
+        impossible_operation_publication = self.summary()
+        impossible_operation_publication["clock_report"][
+            "operation_percentiles_publishable"
+        ] = True
+        hostile.append(impossible_operation_publication)
+
+        qualified_but_regression = self.summary()
+        qualified_but_regression.update(
+            claim_scope="regression_only",
+            source_qualification_reason="qualified",
+            operation_resolution_reason="qualified",
+        )
+        qualified_but_regression["clock_report"].update(
+            source_publishable=True,
+            operation_evaluated=True,
+            operation_percentiles_publishable=True,
+            publication_reason="qualified",
+        )
+        hostile.append(qualified_but_regression)
+
+        unevaluated_candidate = self.summary()
+        unevaluated_candidate.update(
+            claim_scope="publishable_candidate",
+            source_qualification_reason="qualified",
+            operation_resolution_reason="operation_not_evaluated",
+        )
+        unevaluated_candidate["clock_report"].update(
+            source_publishable=True,
+            operation_evaluated=False,
+            operation_percentiles_publishable=False,
+            publication_reason="operation_not_evaluated",
+        )
+        hostile.append(unevaluated_candidate)
+
+        for index, summary in enumerate(hostile):
+            with self.subTest(index=index), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "summary.json"
+                path.write_text(json.dumps(summary), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    load_summary(path, "crossing-limit", 1000, 10)
+
+    def test_load_summary_accepts_only_coherent_candidate_and_unevaluated_regression(self):
+        candidate = self.summary()
+        candidate.update(
+            claim_scope="publishable_candidate",
+            source_qualification_reason="qualified",
+            operation_resolution_reason="qualified",
+        )
+        candidate["clock_report"].update(
+            source_publishable=True,
+            operation_evaluated=True,
+            operation_percentiles_publishable=True,
+            publication_reason="qualified",
+        )
+
+        unevaluated = self.summary()
+        unevaluated.update(
+            claim_scope="regression_only",
+            source_qualification_reason="qualified",
+            operation_resolution_reason="operation_not_evaluated",
+        )
+        unevaluated["clock_report"].update(
+            source_publishable=True,
+            operation_evaluated=False,
+            operation_percentiles_publishable=False,
+            publication_reason="operation_not_evaluated",
+        )
+
+        for index, summary in enumerate((candidate, unevaluated)):
+            with self.subTest(index=index), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "summary.json"
+                path.write_text(json.dumps(summary), encoding="utf-8")
+                self.assertEqual(
+                    load_summary(path, "crossing-limit", 1000, 10),
+                    summary,
+                )
 
     def test_validate_rates_bounds_count_duplicates_and_values(self):
         self.assertEqual(validate_rates([1, 1_000_000_000]), [1, 1_000_000_000])

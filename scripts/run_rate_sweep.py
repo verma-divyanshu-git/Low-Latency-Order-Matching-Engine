@@ -34,8 +34,10 @@ REQUIRED_FIELDS = {
     "max_backlog",
     "max_lateness_ns",
     "claim_scope",
+    "source_qualification_reason",
     "operation_resolution_reason",
     "effective_granularity_ns",
+    "clock_report",
 }
 
 
@@ -97,8 +99,31 @@ def load_summary(
     if data["operation_resolution_reason"] not in {
         "qualified",
         "operation_below_resolution",
+        "operation_not_evaluated",
     }:
         raise ValueError(f"{path}: invalid operation_resolution_reason")
+    clock_report = data["clock_report"]
+    if not isinstance(clock_report, dict):
+        raise ValueError(f"{path}: clock_report must be an object")
+    clock_fields = {
+        "source_publishable",
+        "operation_evaluated",
+        "operation_percentiles_publishable",
+        "publication_reason",
+    }
+    missing_clock_fields = clock_fields.difference(clock_report)
+    if missing_clock_fields:
+        raise ValueError(
+            f"{path}: clock_report missing fields: "
+            f"{', '.join(sorted(missing_clock_fields))}"
+        )
+    for field in (
+        "source_publishable",
+        "operation_evaluated",
+        "operation_percentiles_publishable",
+    ):
+        if type(clock_report[field]) is not bool:
+            raise ValueError(f"{path}: clock_report.{field} must be boolean")
     integer_fields = (
         "count",
         "valid_samples",
@@ -127,16 +152,56 @@ def load_summary(
         raise ValueError(f"{path}: mean_ns must be finite and non-negative")
     if data["requested_rate"] == 0 or data["requested_rate"] > MAXIMUM_RATE:
         raise ValueError(f"{path}: requested_rate is out of range")
+    if data["count"] == 0:
+        raise ValueError(f"{path}: successful open-loop summary must contain valid samples")
     if data["count"] != data["valid_samples"]:
         raise ValueError(f"{path}: count must equal valid_samples")
     if data["count"] > data["executed_operations"]:
         raise ValueError(f"{path}: count cannot exceed executed_operations")
-    if data["valid_samples"] + data["invalid_samples"] != data["executed_operations"]:
-        raise ValueError(f"{path}: valid and invalid samples must equal executed_operations")
-    if data["backward_samples"] + data["migration_samples"] != data["invalid_samples"]:
-        raise ValueError(f"{path}: invalid sample categories are inconsistent")
     if data["migration_samples"] != 0:
         raise ValueError(f"{path}: successful open-loop summaries cannot contain migration")
+    if data["invalid_samples"] != data["backward_samples"]:
+        raise ValueError(f"{path}: successful invalid samples must be backward samples")
+    if data["valid_samples"] + data["backward_samples"] != data["executed_operations"]:
+        raise ValueError(f"{path}: valid and backward samples must equal executed_operations")
+
+    source_publishable = clock_report["source_publishable"]
+    expected_source_reason = "qualified" if source_publishable else "source_regression_only"
+    if data["source_qualification_reason"] != expected_source_reason:
+        raise ValueError(f"{path}: source qualification fields are inconsistent")
+
+    operation_reason = data["operation_resolution_reason"]
+    operation_evaluated = clock_report["operation_evaluated"]
+    if operation_evaluated != (operation_reason != "operation_not_evaluated"):
+        raise ValueError(f"{path}: operation evaluation fields are inconsistent")
+    operation_qualified = operation_reason == "qualified"
+    expected_operation_publishable = (
+        source_publishable and operation_evaluated and operation_qualified
+    )
+    if (
+        clock_report["operation_percentiles_publishable"]
+        != expected_operation_publishable
+    ):
+        raise ValueError(f"{path}: operation publication fields are inconsistent")
+
+    if not source_publishable:
+        expected_publication_reason = "source_regression_only"
+    elif not operation_evaluated:
+        expected_publication_reason = "operation_not_evaluated"
+    elif not operation_qualified:
+        expected_publication_reason = "operation_below_resolution"
+    else:
+        expected_publication_reason = "qualified"
+    if clock_report["publication_reason"] != expected_publication_reason:
+        raise ValueError(f"{path}: clock publication reason is inconsistent")
+
+    expected_claim_scope = (
+        "publishable_candidate"
+        if expected_operation_publishable
+        else "regression_only"
+    )
+    if data["claim_scope"] != expected_claim_scope:
+        raise ValueError(f"{path}: claim_scope contradicts qualification fields")
     expected = {
         "mode": "open-loop",
         "scenario": expected_scenario,
