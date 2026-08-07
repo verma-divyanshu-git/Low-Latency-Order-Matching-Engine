@@ -65,7 +65,9 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
   if(ENGINE_BUILD_BENCHMARKS)
     add_executable(
       matching_engine_measurement_tests
-      tests/clock_probe_cli_test.cpp tests/measurement_test.cpp)
+      tests/clock_probe_cli_test.cpp
+      tests/measurement_review_test.cpp
+      tests/measurement_test.cpp)
     target_link_libraries(
       matching_engine_measurement_tests
       PRIVATE matching_engine::measurement GTest::gtest_main)

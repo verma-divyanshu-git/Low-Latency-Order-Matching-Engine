@@ -19,6 +19,7 @@ Structure-aware libFuzzer testing compares bounded public-operation sequences wi
 This increases defensive test coverage but does not prove correctness or imply that fuzzing has discovered a bug.
 Phase 3A adds a benchmark-only portable clock library and startup self-check that can refuse unresolved measurements.
 It provides measurement infrastructure only and does not benchmark the matching engine.
+Steady-clock fallback can pass clock safety for local regression use but is always marked non-publishable.
 Gateway sequencing and process-boundary interfaces are not implemented yet.
 No latency or throughput claims should be inferred from this repository.
 
@@ -78,6 +79,7 @@ Configuration compiles and links a fuzz harness probe and fails with a precise e
 Under this preset, `engine_configure_target()` uses `fuzzer-no-link`, while an executable fuzz harness must use `engine_configure_fuzz_target()` to link the libFuzzer runtime.
 The `measurement` preset builds and tests the separate `matching_engine::measurement` library and `clock_probe` executable in Release mode.
 Run `./build/measurement/clock_probe --samples 10000 --calibration-ms 10` to emit the startup self-check JSON.
+The JSON separates `clock_safe` from `operation_percentiles_publishable`; a zero exit status does not imply publishable latency evidence.
 The core target does not link measurement code, and `ENGINE_BUILD_BENCHMARKS` defaults to `OFF`.
 
 ## Benchmark contract

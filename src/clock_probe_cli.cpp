@@ -76,4 +76,46 @@ const char* cli_error_name(CliError error) noexcept {
   return "unknown_option";
 }
 
+CompilerMetadata compiler_metadata() noexcept {
+#if defined(__apple_build_version__)
+  return {.family = CompilerFamily::appleclang,
+          .major = __clang_major__,
+          .minor = __clang_minor__,
+          .patch = __clang_patchlevel__};
+#elif defined(__clang__)
+  return {.family = CompilerFamily::clang,
+          .major = __clang_major__,
+          .minor = __clang_minor__,
+          .patch = __clang_patchlevel__};
+#elif defined(__GNUC__)
+  return {.family = CompilerFamily::gcc,
+          .major = __GNUC__,
+          .minor = __GNUC_MINOR__,
+          .patch = __GNUC_PATCHLEVEL__};
+#elif defined(_MSC_VER)
+  return {.family = CompilerFamily::msvc,
+          .major = static_cast<std::uint32_t>(_MSC_VER / 100),
+          .minor = static_cast<std::uint32_t>(_MSC_VER % 100),
+          .patch = static_cast<std::uint32_t>(_MSC_FULL_VER % 100000)};
+#else
+  return {};
+#endif
+}
+
+const char* compiler_family_name(CompilerFamily family) noexcept {
+  switch (family) {
+  case CompilerFamily::appleclang:
+    return "appleclang";
+  case CompilerFamily::clang:
+    return "clang";
+  case CompilerFamily::gcc:
+    return "gcc";
+  case CompilerFamily::msvc:
+    return "msvc";
+  case CompilerFamily::unknown:
+    return "unknown";
+  }
+  return "unknown";
+}
+
 } // namespace matching_engine::measurement

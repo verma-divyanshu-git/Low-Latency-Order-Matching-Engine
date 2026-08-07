@@ -24,34 +24,6 @@ namespace {
 #endif
 }
 
-[[nodiscard]] constexpr std::string_view compiler_name() noexcept {
-#if defined(__apple_build_version__)
-  return "appleclang";
-#elif defined(__clang__)
-  return "clang";
-#elif defined(__GNUC__)
-  return "gcc";
-#elif defined(_MSC_VER)
-  return "msvc";
-#else
-  return "unknown";
-#endif
-}
-
-[[nodiscard]] constexpr std::string_view compiler_version() noexcept {
-#if defined(__clang__)
-  return __clang_version__;
-#elif defined(__GNUC__)
-  return __VERSION__;
-#elif defined(_MSC_FULL_VER)
-#define MATCHING_ENGINE_STRINGIFY_IMPL(value) #value
-#define MATCHING_ENGINE_STRINGIFY(value) MATCHING_ENGINE_STRINGIFY_IMPL(value)
-  return MATCHING_ENGINE_STRINGIFY(_MSC_FULL_VER);
-#else
-  return "unknown";
-#endif
-}
-
 } // namespace
 
 int main(int argc, char** argv) {
@@ -73,20 +45,26 @@ int main(int argc, char** argv) {
   }
 
   const auto capabilities = matching_engine::measurement::clock_capabilities();
+  const auto compiler = matching_engine::measurement::compiler_metadata();
   const auto report = matching_engine::measurement::run_self_check(
       {}, {}, capabilities,
       {.samples = options.samples,
        .calibration_window_ns = static_cast<std::uint64_t>(options.calibration_ms) * 1'000'000U});
 
   std::cout << std::setprecision(12) << "{\"platform\":\"" << platform_name()
-            << "\",\"compiler\":\"" << compiler_name() << "\",\"compiler_version\":\""
-            << compiler_version() << "\",\"source\":\""
-            << matching_engine::measurement::source_name(report.source)
+            << "\",\"compiler_family\":\""
+            << matching_engine::measurement::compiler_family_name(compiler.family)
+            << "\",\"compiler_major\":" << compiler.major
+            << ",\"compiler_minor\":" << compiler.minor << ",\"compiler_patch\":" << compiler.patch
+            << ",\"source\":\"" << matching_engine::measurement::source_name(report.source)
             << "\",\"steady\":" << (capabilities.steady ? "true" : "false")
             << ",\"migration_detection\":" << (capabilities.migration_detection ? "true" : "false")
+            << ",\"source_publication_capable\":"
+            << (capabilities.publication_capable ? "true" : "false")
             << ",\"requested_samples\":" << report.requested_samples
             << ",\"valid_samples\":" << report.valid_samples
             << ",\"zero_deltas\":" << report.zero_deltas
+            << ",\"zero_delta_threshold_percent\":" << report.zero_delta_threshold_percent
             << ",\"backward_reads\":" << report.backward_reads
             << ",\"migration_discards\":" << report.migration_discards
             << ",\"min_overhead_ticks\":" << report.min_overhead_ticks
@@ -96,12 +74,22 @@ int main(int argc, char** argv) {
             << ",\"ticks_per_ns\":" << report.ticks_per_ns
             << ",\"calibration_uncertainty\":" << report.calibration_uncertainty
             << ",\"calibrated\":" << (report.calibrated ? "true" : "false")
-            << ",\"percentiles_publishable\":"
-            << (report.percentiles_publishable ? "true" : "false") << ",\"reason\":\""
-            << matching_engine::measurement::failure_reason_name(report.reason) << "\"}\n";
+            << ",\"clock_safe\":" << (report.clock_safe ? "true" : "false")
+            << ",\"source_publishable\":" << (report.source_publishable ? "true" : "false")
+            << ",\"operation_evaluated\":" << (report.operation_evaluated ? "true" : "false")
+            << ",\"operation_percentiles_publishable\":"
+            << (report.operation_percentiles_publishable ? "true" : "false")
+            << ",\"self_check_reason\":\""
+            << matching_engine::measurement::self_check_reason_name(report.self_check_reason)
+            << "\",\"publication_reason\":\""
+            << matching_engine::measurement::publication_reason_name(report.publication_reason)
+            << "\"}\n";
 
-  std::cerr << "clock_probe: " << matching_engine::measurement::failure_reason_name(report.reason)
+  std::cerr << "clock_probe: "
+            << matching_engine::measurement::self_check_reason_name(report.self_check_reason)
+            << ", publication "
+            << matching_engine::measurement::publication_reason_name(report.publication_reason)
             << " (" << matching_engine::measurement::source_name(report.source)
             << ", effective granularity " << report.effective_granularity_ticks << " ticks)\n";
-  return report.reason == matching_engine::measurement::FailureReason::passed ? 0 : 1;
+  return report.clock_safe ? 0 : 1;
 }
