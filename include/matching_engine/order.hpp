@@ -1,6 +1,7 @@
 #ifndef MATCHING_ENGINE_ORDER_HPP
 #define MATCHING_ENGINE_ORDER_HPP
 
+#include "matching_engine/detail/invariant.hpp"
 #include "matching_engine/types.hpp"
 
 #include <cstdint>
@@ -23,7 +24,7 @@ namespace detail {
   case Side::sell:
     return level | kOrderSideMask;
   }
-  std::unreachable();
+  detail::invariant_failure();
 }
 
 [[nodiscard]] constexpr bool is_encodable_tick_count(std::uint64_t tick_count) noexcept {

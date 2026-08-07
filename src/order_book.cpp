@@ -1,5 +1,7 @@
 #include "matching_engine/order_book.hpp"
 
+#include "matching_engine/detail/invariant.hpp"
+
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
@@ -25,7 +27,7 @@ constexpr Handle kInvalidHandle{.index = kInvalidIndex, .generation = 0U};
   case Side::sell:
     return Side::buy;
   }
-  std::unreachable();
+  detail::invariant_failure();
 }
 
 [[nodiscard]] constexpr bool crosses(Side taker_side, std::uint32_t maker_level,
@@ -36,7 +38,7 @@ constexpr Handle kInvalidHandle{.index = kInvalidIndex, .generation = 0U};
   case Side::sell:
     return maker_level >= limit_level;
   }
-  std::unreachable();
+  detail::invariant_failure();
 }
 
 [[nodiscard]] constexpr bool is_valid_time_in_force(TimeInForce time_in_force) noexcept {
@@ -52,7 +54,7 @@ constexpr Handle kInvalidHandle{.index = kInvalidIndex, .generation = 0U};
   case Side::sell:
     return {maker_id, taker_id, price, quantity};
   }
-  std::unreachable();
+  detail::invariant_failure();
 }
 
 } // namespace
@@ -163,7 +165,7 @@ std::optional<std::uint32_t> OrderBook::next_level(Side side,
     return current + 1U >= domain_.tick_count() ? std::nullopt
                                                 : occupancy(side).next_set(current + 1U);
   }
-  std::unreachable();
+  detail::invariant_failure();
 }
 
 SubmitResult OrderBook::submit_market(OrderId id, Side side, Quantity quantity,
@@ -339,7 +341,7 @@ std::optional<std::uint32_t> OrderBook::best_index(Side side) const noexcept {
   case Side::sell:
     return ask_occupancy_.first_set();
   }
-  std::unreachable();
+  detail::invariant_failure();
 }
 
 std::optional<Price> OrderBook::best_bid() const noexcept {
@@ -592,7 +594,7 @@ PriceLevel& OrderBook::level(Side side, std::uint32_t index) noexcept {
   case Side::sell:
     return asks_[index];
   }
-  std::unreachable();
+  detail::invariant_failure();
 }
 
 const PriceLevel& OrderBook::level(Side side, std::uint32_t index) const noexcept {
@@ -602,7 +604,7 @@ const PriceLevel& OrderBook::level(Side side, std::uint32_t index) const noexcep
   case Side::sell:
     return asks_[index];
   }
-  std::unreachable();
+  detail::invariant_failure();
 }
 
 HierarchicalBitmap& OrderBook::occupancy(Side side) noexcept {
@@ -612,7 +614,7 @@ HierarchicalBitmap& OrderBook::occupancy(Side side) noexcept {
   case Side::sell:
     return ask_occupancy_;
   }
-  std::unreachable();
+  detail::invariant_failure();
 }
 
 const HierarchicalBitmap& OrderBook::occupancy(Side side) const noexcept {
@@ -622,7 +624,7 @@ const HierarchicalBitmap& OrderBook::occupancy(Side side) const noexcept {
   case Side::sell:
     return ask_occupancy_;
   }
-  std::unreachable();
+  detail::invariant_failure();
 }
 
 } // namespace matching_engine

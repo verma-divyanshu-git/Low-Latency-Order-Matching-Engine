@@ -36,6 +36,7 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
 
   add_executable(
     matching_engine_core_tests
+    tests/invariant_test.cpp
     tests/order_arena_test.cpp
     tests/order_book_differential_test.cpp
     tests/order_book_test.cpp
