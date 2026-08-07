@@ -67,6 +67,10 @@ enum class Side : std::uint8_t {
   sell,
 };
 
+[[nodiscard]] constexpr bool is_valid_side(Side side) noexcept {
+  return side == Side::buy || side == Side::sell;
+}
+
 struct Handle {
   std::uint32_t index{};
   std::uint32_t generation{};

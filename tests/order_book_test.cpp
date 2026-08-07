@@ -18,6 +18,9 @@ static_assert(noexcept(std::declval<OrderBook&>().submit_limit(OrderId{1}, Side:
                                                                std::declval<std::span<Trade>>())));
 static_assert(noexcept(std::declval<OrderBook&>().submit_market(OrderId{1}, Side::buy, Quantity{1},
                                                                 std::declval<std::span<Trade>>())));
+static_assert(is_valid_side(Side::buy));
+static_assert(is_valid_side(Side::sell));
+static_assert(!is_valid_side(static_cast<Side>(2U)));
 
 constexpr Handle kNoHandle{.index = kInvalidIndex, .generation = 0U};
 
@@ -69,8 +72,17 @@ TEST(OrderEncodingTest, EncodesSideInHighBitAndLevelInRemainingBits) {
   EXPECT_EQ(detail::decode_side(detail::encode_level_side(0U, Side::sell)), Side::sell);
 }
 
+TEST(OrderEncodingTest, ValidatesTickCountRatherThanMaximumIndex) {
+  constexpr std::uint64_t maximum_tick_count = std::uint64_t{kOrderLevelMask} + 1U;
+
+  EXPECT_FALSE(detail::is_encodable_tick_count(0U));
+  EXPECT_TRUE(detail::is_encodable_tick_count(1U));
+  EXPECT_TRUE(detail::is_encodable_tick_count(maximum_tick_count));
+  EXPECT_FALSE(detail::is_encodable_tick_count(maximum_tick_count + 1U));
+}
+
 TEST(OrderBookConstructionTest, ValidatesConfigurationBoundaries) {
-  EXPECT_THROW((OrderBook{PriceDomain{Price{0}, kOrderSideMask}, 1U, Quantity{1U}}),
+  EXPECT_THROW((OrderBook{PriceDomain{Price{0}, kOrderSideMask + 1U}, 1U, Quantity{1U}}),
                std::length_error);
   EXPECT_THROW((OrderBook{PriceDomain{Price{0}, 1U}, 1U, Quantity{0U}}), std::invalid_argument);
   EXPECT_THROW(
@@ -223,6 +235,32 @@ TEST_F(OrderBookTest, RejectsInvalidInputsBeforeMutation) {
   expect_level(book, Side::buy, 103, 4, 1);
 }
 
+TEST_F(OrderBookTest, RejectsInvalidSideBeforeLimitMutation) {
+  ASSERT_EQ(limit(1, Side::sell, 103, 4).reject_reason, RejectReason::none);
+  const Side invalid_side =
+      static_cast<Side>(2U); // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange)
+
+  const SubmitResult result = limit(2, invalid_side, 103, 2);
+
+  expect_result(result, RejectReason::invalid_side, 0, 2, 0);
+  EXPECT_EQ(book.best_bid(), std::nullopt);
+  EXPECT_EQ(book.best_ask(), Price{103});
+  expect_level(book, Side::sell, 103, 4, 1);
+  EXPECT_EQ(book.level_info(invalid_side, Price{103}), std::nullopt);
+}
+
+TEST_F(OrderBookTest, RejectsInvalidSideBeforeMarketMutation) {
+  ASSERT_EQ(limit(1, Side::sell, 103, 4).reject_reason, RejectReason::none);
+  const Side invalid_side =
+      static_cast<Side>(255U); // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange)
+
+  const SubmitResult result = market(2, invalid_side, 2);
+
+  expect_result(result, RejectReason::invalid_side, 0, 2, 0);
+  EXPECT_EQ(book.best_ask(), Price{103});
+  expect_level(book, Side::sell, 103, 4, 1);
+}
+
 TEST_F(OrderBookTest, UndersizedOutputRejectsWithoutMutation) {
   ASSERT_EQ(limit(1, Side::sell, 103, 4).reject_reason, RejectReason::none);
   std::array<Trade, 7> too_small{};
@@ -281,16 +319,35 @@ TEST(OrderBookCapacityTest, FullArenaIncomingOrderThatFullyCrossesSucceeds) {
 TEST(OrderBookCapacityTest, FullArenaCanReuseExhaustedMakerForResidual) {
   OrderBook book{PriceDomain{Price{1}, 4U}, 1U, Quantity{10}};
   std::array<Trade, 1> trades{};
-  ASSERT_EQ(book.submit_limit(OrderId{1}, Side::sell, Price{2}, Quantity{2}, trades).reject_reason,
-            RejectReason::none);
+  const SubmitResult maker =
+      book.submit_limit(OrderId{1}, Side::sell, Price{2}, Quantity{2}, trades);
+  ASSERT_EQ(maker.reject_reason, RejectReason::none);
 
   const SubmitResult result =
       book.submit_limit(OrderId{2}, Side::buy, Price{2}, Quantity{5}, trades);
 
   OrderBookTest::expect_result(result, RejectReason::none, 2, 3, 1, result.resting_handle);
-  EXPECT_NE(result.resting_handle, kNoHandle);
+  EXPECT_EQ(trades[0], (Trade{OrderId{2}, OrderId{1}, Price{2}, Quantity{2}}));
+  EXPECT_EQ(result.resting_handle.index, maker.resting_handle.index);
+  EXPECT_EQ(result.resting_handle.generation,
+            detail::next_generation(maker.resting_handle.generation));
+  EXPECT_NE(result.resting_handle, maker.resting_handle);
+  EXPECT_EQ(book.best_ask(), std::nullopt);
   EXPECT_EQ(book.best_bid(), Price{2});
   OrderBookTest::expect_level(book, Side::buy, 2, 3, 1);
+}
+
+TEST(OrderBookQuantityTest, AcceptsExactUint32MaximumWhenConfigured) {
+  constexpr std::uint64_t maximum = std::numeric_limits<std::uint32_t>::max();
+  OrderBook book{PriceDomain{Price{7}, 1U}, 1U, Quantity{maximum}};
+  std::array<Trade, 1> trades{};
+
+  const SubmitResult result =
+      book.submit_limit(OrderId{1}, Side::buy, Price{7}, Quantity{maximum}, trades);
+
+  OrderBookTest::expect_result(result, RejectReason::none, 0, maximum, 0, result.resting_handle);
+  EXPECT_NE(result.resting_handle, kNoHandle);
+  OrderBookTest::expect_level(book, Side::buy, 7, maximum, 1);
 }
 
 TEST_F(OrderBookTest, DeterministicMixedOperationsPreservePriorityAndAggregates) {

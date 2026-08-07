@@ -12,6 +12,7 @@ This slice does not need an unbounded or sparse price universe.
 
 Startup configuration defines an inclusive minimum price and a positive 32-bit tick count.
 The resulting contiguous domain must fit in signed 64-bit ticks without overflow.
+The order encoding reserves its high bit for side, leaving indexes `0` through `0x7fffffff`; this permits `0x80000000` tick positions because a count is one greater than its maximum zero-based index.
 Prices outside that configured domain have no index and must be rejected by callers before book mutation.
 Configurations that require a wider universe, sparse price bands, or gaps are unsupported and must be rejected rather than silently compressed.
 

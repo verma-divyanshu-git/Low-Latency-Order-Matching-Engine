@@ -39,6 +39,7 @@ struct Trade {
 
 enum class RejectReason : std::uint8_t {
   none,
+  invalid_side,
   zero_quantity,
   quantity_too_large,
   price_out_of_domain,
@@ -81,7 +82,8 @@ public:
 private:
   [[nodiscard]] static PriceDomain checked_domain(PriceDomain domain);
   [[nodiscard]] static std::uint32_t checked_max_quantity(Quantity quantity);
-  [[nodiscard]] SubmitResult validate(Quantity quantity, std::span<Trade> trades) const noexcept;
+  [[nodiscard]] SubmitResult validate(Side side, Quantity quantity,
+                                      std::span<Trade> trades) const noexcept;
   [[nodiscard]] bool has_crossing_order(Side side, std::uint32_t limit_index) const noexcept;
   void match(OrderId taker_id, Side taker_side, std::optional<std::uint32_t> limit_index,
              std::uint64_t& remaining, std::span<Trade> trades,

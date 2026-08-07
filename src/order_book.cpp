@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace matching_engine {
 namespace {
@@ -17,6 +18,38 @@ constexpr Handle kInvalidHandle{.index = kInvalidIndex, .generation = 0U};
           .resting_handle = kInvalidHandle};
 }
 
+[[nodiscard]] constexpr Side opposite_side(Side side) noexcept {
+  switch (side) {
+  case Side::buy:
+    return Side::sell;
+  case Side::sell:
+    return Side::buy;
+  }
+  std::unreachable();
+}
+
+[[nodiscard]] constexpr bool crosses(Side taker_side, std::uint32_t maker_level,
+                                     std::uint32_t limit_level) noexcept {
+  switch (taker_side) {
+  case Side::buy:
+    return maker_level <= limit_level;
+  case Side::sell:
+    return maker_level >= limit_level;
+  }
+  std::unreachable();
+}
+
+[[nodiscard]] Trade make_trade(Side taker_side, OrderId taker_id, OrderId maker_id, Price price,
+                               Quantity quantity) noexcept {
+  switch (taker_side) {
+  case Side::buy:
+    return {taker_id, maker_id, price, quantity};
+  case Side::sell:
+    return {maker_id, taker_id, price, quantity};
+  }
+  std::unreachable();
+}
+
 } // namespace
 
 OrderBook::OrderBook(PriceDomain domain, std::size_t max_orders, Quantity max_order_quantity)
@@ -28,7 +61,7 @@ OrderBook::OrderBook(PriceDomain domain, std::size_t max_orders, Quantity max_or
       arena_{max_orders} {}
 
 PriceDomain OrderBook::checked_domain(PriceDomain domain) {
-  if (domain.tick_count() > kOrderLevelMask) {
+  if (!detail::is_encodable_tick_count(domain.tick_count())) {
     throw std::length_error{"OrderBook price domain exceeds encoded level range"};
   }
   return domain;
@@ -41,7 +74,11 @@ std::uint32_t OrderBook::checked_max_quantity(Quantity quantity) {
   return static_cast<std::uint32_t>(quantity.value());
 }
 
-SubmitResult OrderBook::validate(Quantity quantity, std::span<Trade> trades) const noexcept {
+SubmitResult OrderBook::validate(Side side, Quantity quantity,
+                                 std::span<Trade> trades) const noexcept {
+  if (!is_valid_side(side)) {
+    return rejected(RejectReason::invalid_side, quantity);
+  }
   if (quantity.value() == 0U) {
     return rejected(RejectReason::zero_quantity, quantity);
   }
@@ -56,7 +93,7 @@ SubmitResult OrderBook::validate(Quantity quantity, std::span<Trade> trades) con
 
 SubmitResult OrderBook::submit_limit(OrderId id, Side side, Price price, Quantity quantity,
                                      std::span<Trade> trades) noexcept {
-  const SubmitResult validation = validate(quantity, trades);
+  const SubmitResult validation = validate(side, quantity, trades);
   if (validation.reject_reason != RejectReason::none) {
     return validation;
   }
@@ -81,7 +118,7 @@ SubmitResult OrderBook::submit_limit(OrderId id, Side side, Price price, Quantit
 
 SubmitResult OrderBook::submit_market(OrderId id, Side side, Quantity quantity,
                                       std::span<Trade> trades) noexcept {
-  const SubmitResult validation = validate(quantity, trades);
+  const SubmitResult validation = validate(side, quantity, trades);
   if (validation.reject_reason != RejectReason::none) {
     return validation;
   }
@@ -97,22 +134,20 @@ SubmitResult OrderBook::submit_market(OrderId id, Side side, Quantity quantity,
 }
 
 bool OrderBook::has_crossing_order(Side side, std::uint32_t limit_index) const noexcept {
-  const auto opposite_best = best_index(side == Side::buy ? Side::sell : Side::buy);
-  return opposite_best.has_value() &&
-         (side == Side::buy ? *opposite_best <= limit_index : *opposite_best >= limit_index);
+  const auto opposite_best = best_index(opposite_side(side));
+  return opposite_best.has_value() && crosses(side, *opposite_best, limit_index);
 }
 
 void OrderBook::match(OrderId taker_id, Side taker_side, std::optional<std::uint32_t> limit_index,
                       std::uint64_t& remaining, std::span<Trade> trades,
                       std::uint32_t& trade_count) noexcept {
-  const Side maker_side = taker_side == Side::buy ? Side::sell : Side::buy;
+  const Side maker_side = opposite_side(taker_side);
   while (remaining != 0U) {
     const auto maker_level = best_index(maker_side);
     if (!maker_level.has_value()) {
       return;
     }
-    if (limit_index.has_value() &&
-        (taker_side == Side::buy ? *maker_level > *limit_index : *maker_level < *limit_index)) {
+    if (limit_index.has_value() && !crosses(taker_side, *maker_level, *limit_index)) {
       return;
     }
     match_level(taker_id, taker_side, *maker_level, remaining, trades, trade_count);
@@ -122,7 +157,7 @@ void OrderBook::match(OrderId taker_id, Side taker_side, std::optional<std::uint
 void OrderBook::match_level(OrderId taker_id, Side taker_side, std::uint32_t level_index,
                             std::uint64_t& remaining, std::span<Trade> trades,
                             std::uint32_t& trade_count) noexcept {
-  const Side maker_side = taker_side == Side::buy ? Side::sell : Side::buy;
+  const Side maker_side = opposite_side(taker_side);
   PriceLevel& price_level = level(maker_side, level_index);
   const auto execution_price = domain_.price_at(level_index);
   if (!execution_price.has_value()) {
@@ -131,9 +166,8 @@ void OrderBook::match_level(OrderId taker_id, Side taker_side, std::uint32_t lev
   while (remaining != 0U && price_level.head_index != kInvalidIndex) {
     Order& maker = arena_.order_at(price_level.head_index);
     const std::uint64_t execution = std::min(remaining, maker.remaining.value());
-    trades[trade_count++] = taker_side == Side::buy
-                                ? Trade{taker_id, maker.id, *execution_price, Quantity{execution}}
-                                : Trade{maker.id, taker_id, *execution_price, Quantity{execution}};
+    trades[trade_count++] =
+        make_trade(taker_side, taker_id, maker.id, *execution_price, Quantity{execution});
     remaining -= execution;
     price_level.aggregate_quantity -= execution;
     if (execution == maker.remaining.value()) {
@@ -182,7 +216,13 @@ Handle OrderBook::rest(OrderId id, Side side, std::uint32_t level_index,
 }
 
 std::optional<std::uint32_t> OrderBook::best_index(Side side) const noexcept {
-  return side == Side::buy ? bid_occupancy_.last_set() : ask_occupancy_.first_set();
+  switch (side) {
+  case Side::buy:
+    return bid_occupancy_.last_set();
+  case Side::sell:
+    return ask_occupancy_.first_set();
+  }
+  std::unreachable();
 }
 
 std::optional<Price> OrderBook::best_bid() const noexcept {
@@ -196,6 +236,9 @@ std::optional<Price> OrderBook::best_ask() const noexcept {
 }
 
 std::optional<LevelInfo> OrderBook::level_info(Side side, Price price) const noexcept {
+  if (!is_valid_side(side)) {
+    return std::nullopt;
+  }
   const auto index = domain_.index_of(price);
   if (!index.has_value()) {
     return std::nullopt;
@@ -210,19 +253,43 @@ std::size_t OrderBook::required_trade_capacity() const noexcept {
 }
 
 PriceLevel& OrderBook::level(Side side, std::uint32_t index) noexcept {
-  return side == Side::buy ? bids_[index] : asks_[index];
+  switch (side) {
+  case Side::buy:
+    return bids_[index];
+  case Side::sell:
+    return asks_[index];
+  }
+  std::unreachable();
 }
 
 const PriceLevel& OrderBook::level(Side side, std::uint32_t index) const noexcept {
-  return side == Side::buy ? bids_[index] : asks_[index];
+  switch (side) {
+  case Side::buy:
+    return bids_[index];
+  case Side::sell:
+    return asks_[index];
+  }
+  std::unreachable();
 }
 
 HierarchicalBitmap& OrderBook::occupancy(Side side) noexcept {
-  return side == Side::buy ? bid_occupancy_ : ask_occupancy_;
+  switch (side) {
+  case Side::buy:
+    return bid_occupancy_;
+  case Side::sell:
+    return ask_occupancy_;
+  }
+  std::unreachable();
 }
 
 const HierarchicalBitmap& OrderBook::occupancy(Side side) const noexcept {
-  return side == Side::buy ? bid_occupancy_ : ask_occupancy_;
+  switch (side) {
+  case Side::buy:
+    return bid_occupancy_;
+  case Side::sell:
+    return ask_occupancy_;
+  }
+  std::unreachable();
 }
 
 } // namespace matching_engine

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <limits>
 #include <type_traits>
+#include <utility>
 
 namespace matching_engine {
 
@@ -16,7 +17,19 @@ inline constexpr std::uint32_t kOrderSideMask = 0x8000'0000U;
 namespace detail {
 
 [[nodiscard]] constexpr std::uint32_t encode_level_side(std::uint32_t level, Side side) noexcept {
-  return level | (side == Side::sell ? kOrderSideMask : 0U);
+  switch (side) {
+  case Side::buy:
+    return level;
+  case Side::sell:
+    return level | kOrderSideMask;
+  }
+  std::unreachable();
+}
+
+[[nodiscard]] constexpr bool is_encodable_tick_count(std::uint64_t tick_count) noexcept {
+  // The maximum encoded index is kOrderLevelMask, so the position count may be one larger.
+  constexpr std::uint64_t maximum_tick_count = std::uint64_t{kOrderLevelMask} + 1U;
+  return tick_count != 0U && tick_count <= maximum_tick_count;
 }
 
 [[nodiscard]] constexpr std::uint32_t decode_level(std::uint32_t encoded) noexcept {
