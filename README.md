@@ -13,6 +13,8 @@ A single-writer, fixed-capacity order book now matches GTC, IOC, FOK, and market
 Generation-checked cancellation, priority-preserving quantity decreases, and priority-losing cancel-replacement are implemented.
 Phase 2A adds an explicit allocation-free structural invariant checker for tests, deterministic replay verification, and debug tooling.
 The checker validates redundant level, occupancy, linked-list, arena-liveness, aggregate, reachability, and uncrossed-book representations without running on release order operations.
+Phase 2B adds generation-validated live order inspection and an independent standard-library reference book.
+Ten fixed seeds exercise 10,000 normal differential operations, with additional labeled high-cancel and volatility-shock synthetic stress workloads.
 Gateway sequencing and process-boundary interfaces are not implemented yet.
 No latency or throughput claims should be inferred from this repository.
 
@@ -89,7 +91,7 @@ Future benchmark reports will:
 - This is not production-ready trading software.
 - Persistence, recovery, networking, risk checks, authentication, authorization, administration, and operational monitoring are not implemented.
 - Duplicate order identifiers are not detected by the matching core and must be rejected by a future gateway.
-- Structural invariant checks do not prove global submitted, executed, and canceled volume conservation or self-trade prevention; those belong to the Phase 2 reference model and future STP tests.
+- Structural invariant checks do not prove volume conservation by themselves; the differential driver checks an independent conservation ledger, while self-trade prevention remains unimplemented.
 - Each order book requires exclusive access by one matching thread; concurrent calls are unsupported.
 - Price and order capacities are fixed at construction, and callers must provide `max_orders` trade slots for every submission.
 - Market and IOC residual is cancelled, while FOK rejects without mutation unless the full quantity is immediately executable within its limit.
@@ -102,6 +104,7 @@ Future benchmark reports will:
 ## Project documentation
 
 - [Architecture decision records](docs/adr/README.md)
+- [Differential testing and replay](docs/differential-testing.md)
 - [Primary references](docs/references.md)
 - [Security policy](SECURITY.md)
 

@@ -73,6 +73,13 @@ public:
     return &slots_[handle.index].order;
   }
 
+  [[nodiscard]] const Order* resolve(Handle handle) const noexcept {
+    if (!is_live_handle(handle)) {
+      return nullptr;
+    }
+    return &slots_[handle.index].order;
+  }
+
   [[nodiscard]] ArenaError release(Handle handle) noexcept {
     if (!is_live_handle(handle)) {
       return ArenaError::invalid_handle;

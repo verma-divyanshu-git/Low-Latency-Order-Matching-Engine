@@ -365,6 +365,21 @@ std::optional<LevelInfo> OrderBook::level_info(Side side, Price price) const noe
                    .order_count = price_level.order_count};
 }
 
+std::optional<OrderInfo> OrderBook::order_info(Handle handle) const noexcept {
+  const Order* const order = arena_.resolve(handle);
+  if (order == nullptr) {
+    return std::nullopt;
+  }
+  const auto price = domain_.price_at(detail::decode_level(order->encoded_level_side));
+  if (!price.has_value()) {
+    return std::nullopt;
+  }
+  return OrderInfo{.id = order->id,
+                   .side = detail::decode_side(order->encoded_level_side),
+                   .price = *price,
+                   .remaining = order->remaining};
+}
+
 std::size_t OrderBook::required_trade_capacity() const noexcept {
   return arena_.capacity();
 }

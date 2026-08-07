@@ -17,7 +17,9 @@ static_assert(std::is_trivially_copyable_v<SubmitResult>);
 static_assert(std::is_trivially_copyable_v<CancelResult>);
 static_assert(std::is_trivially_copyable_v<AmendResult>);
 static_assert(std::is_trivially_copyable_v<InvariantResult>);
+static_assert(std::is_trivially_copyable_v<OrderInfo>);
 static_assert(noexcept(std::declval<OrderBook&>().check_invariants()));
+static_assert(noexcept(std::declval<const OrderBook&>().order_info(Handle{})));
 static_assert(InvariantViolation::bitmap_hierarchy_inconsistent != InvariantViolation::none);
 static_assert(noexcept(std::declval<OrderBook&>().submit_limit(OrderId{1}, Side::buy, Price{1},
                                                                Quantity{1},
@@ -127,6 +129,23 @@ TEST_F(OrderBookTest, PassiveOrdersRestAndPublishBboAndLevelAggregates) {
   expect_level(book, Side::buy, 103, 12, 2);
   expect_level(book, Side::sell, 107, 9, 1);
   EXPECT_EQ(book.level_info(Side::buy, Price{99}), std::nullopt);
+}
+
+TEST_F(OrderBookTest, OrderInfoReturnsLiveStateAndRejectsStaleAndOutOfRangeHandles) {
+  const SubmitResult resting = limit(42, Side::sell, 104, 7);
+  ASSERT_EQ(resting.reject_reason, RejectReason::none);
+
+  EXPECT_EQ(book.order_info(resting.resting_handle),
+            (OrderInfo{OrderId{42}, Side::sell, Price{104}, Quantity{7}}));
+  EXPECT_EQ(book.order_info(Handle{kInvalidIndex, 1U}), std::nullopt);
+  EXPECT_EQ(book.order_info(Handle{resting.resting_handle.index, 0U}), std::nullopt);
+
+  ASSERT_EQ(book.amend_quantity(resting.resting_handle, Quantity{3}).reject_reason,
+            AmendReason::none);
+  EXPECT_EQ(book.order_info(resting.resting_handle),
+            (OrderInfo{OrderId{42}, Side::sell, Price{104}, Quantity{3}}));
+  ASSERT_EQ(book.cancel(resting.resting_handle).reject_reason, CancelReason::none);
+  EXPECT_EQ(book.order_info(resting.resting_handle), std::nullopt);
 }
 
 TEST_F(OrderBookTest, ExactFillUsesRestingMakerPriceAndRetiresLevel) {

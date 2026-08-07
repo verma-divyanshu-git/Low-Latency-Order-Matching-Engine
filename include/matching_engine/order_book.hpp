@@ -28,6 +28,15 @@ struct LevelInfo {
   constexpr bool operator==(const LevelInfo&) const noexcept = default;
 };
 
+struct OrderInfo {
+  OrderId id{0U};
+  Side side{Side::buy};
+  Price price{0};
+  Quantity remaining{0U};
+
+  constexpr bool operator==(const OrderInfo&) const noexcept = default;
+};
+
 struct Trade {
   OrderId buy_id{0U};
   OrderId sell_id{0U};
@@ -132,6 +141,7 @@ struct InvariantResult {
 };
 
 static_assert(std::is_trivially_copyable_v<Trade>);
+static_assert(std::is_trivially_copyable_v<OrderInfo>);
 static_assert(std::is_trivially_copyable_v<SubmitResult>);
 static_assert(std::is_trivially_copyable_v<CancelResult>);
 static_assert(std::is_trivially_copyable_v<AmendResult>);
@@ -163,6 +173,7 @@ public:
   [[nodiscard]] std::optional<Price> best_bid() const noexcept;
   [[nodiscard]] std::optional<Price> best_ask() const noexcept;
   [[nodiscard]] std::optional<LevelInfo> level_info(Side side, Price price) const noexcept;
+  [[nodiscard]] std::optional<OrderInfo> order_info(Handle handle) const noexcept;
   [[nodiscard]] std::size_t required_trade_capacity() const noexcept;
   [[nodiscard]] InvariantResult check_invariants() noexcept;
 
