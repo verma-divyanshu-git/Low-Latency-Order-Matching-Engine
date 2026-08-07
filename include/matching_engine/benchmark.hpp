@@ -1,4 +1,5 @@
-#pragma once
+#ifndef MATCHING_ENGINE_BENCHMARK_HPP
+#define MATCHING_ENGINE_BENCHMARK_HPP
 
 #include "matching_engine/measurement.hpp"
 
@@ -18,7 +19,7 @@ namespace matching_engine::benchmark {
 inline constexpr std::uint64_t kMaximumSamples = 1'000'000U;
 inline constexpr std::uint64_t kNanosecondsPerSecond = 1'000'000'000U;
 inline constexpr std::uint64_t kMaximumDiagnosticCorrectedCount = 10'000'000U;
-inline constexpr std::uint64_t kBenchmarkMemoryBudgetBytes = 256U * 1024U * 1024U;
+inline constexpr std::uint64_t kBenchmarkMemoryBudgetBytes = 256ULL * 1024U * 1024U;
 
 struct TickRatio {
   std::uint64_t numerator{};
@@ -261,3 +262,5 @@ struct RunResult {
 [[nodiscard]] std::optional<RunResult> run(const Config& config, std::string& error);
 
 } // namespace matching_engine::benchmark
+
+#endif

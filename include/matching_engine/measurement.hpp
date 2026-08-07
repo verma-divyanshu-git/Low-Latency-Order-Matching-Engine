@@ -1,4 +1,5 @@
-#pragma once
+#ifndef MATCHING_ENGINE_MEASUREMENT_HPP
+#define MATCHING_ENGINE_MEASUREMENT_HPP
 
 #include <cstdint>
 
@@ -125,3 +126,5 @@ struct CalibrationBracket {
 [[nodiscard]] const char* publication_reason_name(PublicationReason reason) noexcept;
 
 } // namespace matching_engine::measurement
+
+#endif
