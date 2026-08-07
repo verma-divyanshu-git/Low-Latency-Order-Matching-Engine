@@ -80,9 +80,19 @@ TEST(ThroughputCliTest, RejectsMalformedOutOfRangeAndTrailingArguments) {
   EXPECT_FALSE(parse_cli({"--repetitions", "2"}).has_value());
   EXPECT_FALSE(parse_cli({"--repetitions", "22"}).has_value());
   EXPECT_FALSE(parse_cli({"--samples", "10x"}).has_value());
+  EXPECT_FALSE(parse_cli({"--min-ops-per-second", "0"}).has_value());
   EXPECT_FALSE(parse_cli({"--max-relative-mad", "nan"}).has_value());
   EXPECT_FALSE(parse_cli({"--output", "../result.json"}).has_value());
   EXPECT_FALSE(parse_cli({"trailing"}).has_value());
+}
+
+TEST(ThroughputGateTest, RejectsInvalidDirectThresholds) {
+  Statistics statistics{};
+  statistics.validation_passed = true;
+  statistics.best_ops_per_second = 1'000.0;
+  statistics.relative_mad = 0.1;
+  EXPECT_FALSE(passes_gate(statistics, 0.0, 0.25));
+  EXPECT_FALSE(passes_gate(statistics, 1.0, -0.1));
 }
 
 TEST(ThroughputEndToEndTest, RunsSmallValidatedCrossingBatch) {

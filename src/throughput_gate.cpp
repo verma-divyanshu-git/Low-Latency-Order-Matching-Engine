@@ -193,8 +193,8 @@ bool passes_gate(const Statistics& statistics, double minimum_ops_per_second,
                  double maximum_relative_mad) noexcept {
   return statistics.validation_passed && std::isfinite(statistics.best_ops_per_second) &&
          std::isfinite(statistics.relative_mad) && std::isfinite(minimum_ops_per_second) &&
-         std::isfinite(maximum_relative_mad) &&
-         statistics.best_ops_per_second >= minimum_ops_per_second &&
+         std::isfinite(maximum_relative_mad) && minimum_ops_per_second > 0.0 &&
+         maximum_relative_mad >= 0.0 && statistics.best_ops_per_second >= minimum_ops_per_second &&
          statistics.relative_mad <= maximum_relative_mad;
 }
 
@@ -203,7 +203,8 @@ std::optional<std::string> statistics_json(const Statistics& statistics,
                                            double maximum_relative_mad) {
   if (statistics.elapsed_ns.empty() || !std::isfinite(statistics.relative_mad) ||
       !std::isfinite(statistics.best_ops_per_second) || !std::isfinite(minimum_ops_per_second) ||
-      !std::isfinite(maximum_relative_mad)) {
+      !std::isfinite(maximum_relative_mad) || minimum_ops_per_second <= 0.0 ||
+      maximum_relative_mad < 0.0) {
     return std::nullopt;
   }
   std::ostringstream output;
@@ -267,7 +268,8 @@ std::optional<Config> parse_cli(const std::vector<std::string>& arguments, std::
       }
       repetitions_set = true;
     } else if (option == "--min-ops-per-second") {
-      if (minimum_set || !parse_finite_double(value, 0.0, 1.0e15, config.minimum_ops_per_second)) {
+      if (minimum_set || !parse_finite_double(value, 0.0, 1.0e15, config.minimum_ops_per_second) ||
+          config.minimum_ops_per_second <= 0.0) {
         return fail("invalid --min-ops-per-second");
       }
       minimum_set = true;
@@ -295,7 +297,8 @@ std::optional<Statistics> run(const Config& config, std::string& error) {
   if (config.samples == 0U || config.samples > kMaximumSamples ||
       config.repetitions < kMinimumRepetitions || config.repetitions > kMaximumRepetitions ||
       !std::isfinite(config.minimum_ops_per_second) ||
-      !std::isfinite(config.maximum_relative_mad)) {
+      !std::isfinite(config.maximum_relative_mad) || config.minimum_ops_per_second <= 0.0 ||
+      config.maximum_relative_mad < 0.0) {
     error = "invalid throughput gate configuration";
     return std::nullopt;
   }
