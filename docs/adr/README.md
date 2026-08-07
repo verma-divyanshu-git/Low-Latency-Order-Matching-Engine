@@ -17,3 +17,4 @@ A new record supersedes a decision when the architecture changes.
 - [ADR-0008: Structure-aware differential fuzzing](0008-structure-aware-differential-fuzzing.md)
 - [ADR-0009: Portable benchmark clock and startup self-check](0009-portable-benchmark-clock.md)
 - [ADR-0010: Open-loop order-book benchmark contract](0010-open-loop-benchmark-contract.md)
+- [ADR-0011: Host qualification and noisy-CI regression gate](0011-host-qualification-and-ci-regression-gate.md)

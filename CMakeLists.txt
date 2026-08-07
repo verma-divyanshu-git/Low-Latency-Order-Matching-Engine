@@ -60,6 +60,14 @@ if(ENGINE_BUILD_BENCHMARKS)
     PRIVATE matching_engine::core hdr_histogram::hdr_histogram_static)
   engine_configure_target(matching_engine_benchmark)
 
+  add_library(matching_engine_throughput_gate STATIC src/throughput_gate.cpp)
+  add_library(matching_engine::throughput_gate ALIAS matching_engine_throughput_gate)
+  target_include_directories(
+    matching_engine_throughput_gate
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  target_link_libraries(matching_engine_throughput_gate PRIVATE matching_engine::core)
+  engine_configure_target(matching_engine_throughput_gate)
+
   add_executable(clock_probe src/clock_probe.cpp)
   target_link_libraries(clock_probe PRIVATE matching_engine::measurement)
   engine_configure_target(clock_probe)
@@ -67,6 +75,24 @@ if(ENGINE_BUILD_BENCHMARKS)
   add_executable(order_book_benchmark src/order_book_benchmark.cpp)
   target_link_libraries(order_book_benchmark PRIVATE matching_engine::benchmark)
   engine_configure_target(order_book_benchmark)
+
+  add_executable(order_book_throughput_gate src/order_book_throughput_gate.cpp)
+  target_link_libraries(order_book_throughput_gate PRIVATE matching_engine::throughput_gate)
+  engine_configure_target(order_book_throughput_gate)
+  if(BUILD_TESTING)
+    add_test(
+      NAME order_book_throughput_gate_e2e
+      COMMAND order_book_throughput_gate
+              --samples
+              32
+              --repetitions
+              3
+              --min-ops-per-second
+              1
+              --max-relative-mad
+              1)
+    set_tests_properties(order_book_throughput_gate_e2e PROPERTIES TIMEOUT 10)
+  endif()
 endif()
 
 if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
@@ -98,10 +124,11 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
       tests/benchmark_test.cpp
       tests/clock_probe_cli_test.cpp
       tests/measurement_review_test.cpp
-      tests/measurement_test.cpp)
+      tests/measurement_test.cpp
+      tests/throughput_gate_test.cpp)
     target_link_libraries(
       matching_engine_measurement_tests
-      PRIVATE matching_engine::benchmark GTest::gtest_main)
+      PRIVATE matching_engine::benchmark matching_engine::throughput_gate GTest::gtest_main)
     engine_configure_target(matching_engine_measurement_tests)
     gtest_discover_tests(matching_engine_measurement_tests)
   endif()

@@ -89,6 +89,34 @@ jobs:
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
 
+  throughput-regression:
+    name: Ubuntu 22.04 Release batch throughput regression
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out source
+        # actions/checkout v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install build tools
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install --yes cmake ninja-build
+
+      - name: Configure Release measurement targets
+        run: cmake --preset measurement
+
+      - name: Build batch throughput gate
+        run: cmake --build --preset measurement --target order_book_throughput_gate
+
+      - name: Run CI-only batch regression gate
+        run: |
+          ./build/measurement/order_book_throughput_gate \
+            --samples 100000 \
+            --repetitions 7 \
+            --min-ops-per-second 1000000 \
+            --max-relative-mad 0.25
+
   fuzz:
     name: Ubuntu 22.04 Clang fuzz smoke
     runs-on: ubuntu-22.04

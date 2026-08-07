@@ -19,6 +19,7 @@ Structure-aware libFuzzer testing compares bounded public-operation sequences wi
 This increases defensive test coverage but does not prove correctness or imply that fuzzing has discovered a bug.
 Phase 3A adds a benchmark-only portable clock library and startup self-check that can refuse unresolved measurements.
 Phase 3B adds a benchmark-only open-loop order-book harness, atomic raw HdrHistogram artifact sets with explicit resolution refusal fields, explicit rate sweeps, and a bounded separate synthetic coordinated-omission diagnostic.
+Phase 3C adds report-only Linux host qualification and a separate batch-amortized noisy-CI throughput regression gate with no latency claims.
 Steady-clock fallback can pass clock safety for local regression use but is always marked non-publishable.
 Gateway sequencing and process-boundary interfaces are not implemented yet.
 No latency or throughput claims should be inferred from this repository.
@@ -81,6 +82,7 @@ The `measurement` preset builds and tests the separate measurement and benchmark
 Run `./build/measurement/clock_probe --samples 10000 --calibration-ms 10` to emit the startup self-check JSON.
 The JSON separates `clock_safe` from `operation_percentiles_publishable`; a zero exit status does not imply publishable latency evidence.
 The [benchmarking guide](docs/benchmarking.md) defines open-loop scheduling, workloads, artifacts, diagnostics, and reproduction commands.
+The [host qualification guide](docs/host-qualification.md) defines Linux environment evidence and the CI-only batch throughput gate.
 The core target does not link measurement code, and `ENGINE_BUILD_BENCHMARKS` defaults to `OFF`.
 
 ## Benchmark contract
@@ -119,6 +121,7 @@ Future benchmark reports will:
 - [Order book fuzzing](docs/fuzzing.md)
 - [Measurement clock self-check](docs/measurement.md)
 - [Order-book benchmarking methodology](docs/benchmarking.md)
+- [Linux host qualification and CI throughput gate](docs/host-qualification.md)
 - [Primary references](docs/references.md)
 - [Security policy](SECURITY.md)
 
