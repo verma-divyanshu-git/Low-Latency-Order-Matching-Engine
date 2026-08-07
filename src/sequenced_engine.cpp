@@ -1,6 +1,8 @@
 #include "matching_engine/sequenced_engine.hpp"
 
+#include <algorithm>
 #include <limits>
+#include <stdexcept>
 
 namespace matching_engine {
 namespace {
@@ -20,17 +22,27 @@ namespace {
 } // namespace
 
 SequencedEngine::SequencedEngine(PriceDomain domain, std::size_t max_orders,
-                                 Quantity max_order_quantity)
+                                 Quantity max_order_quantity, Sequence next_sequence,
+                                 std::uint64_t last_logical_time)
     : order_book_{domain, max_orders, max_order_quantity},
       trade_scratch_{max_orders == 0U ? nullptr : std::make_unique<Trade[]>(max_orders)},
-      trade_capacity_{max_orders} {}
+      trade_capacity_{max_orders}, next_sequence_{next_sequence.value()},
+      last_logical_time_{last_logical_time} {
+  if (next_sequence.value() == 0U) {
+    throw std::invalid_argument{"initial sequence must be nonzero"};
+  }
+}
 
-std::size_t SequencedEngine::maximum_event_count(CommandType type) const noexcept {
-  switch (type) {
+std::size_t SequencedEngine::maximum_event_count(const CommandPayload& payload) const noexcept {
+  switch (payload.tag) {
   case CommandType::submit_limit:
   case CommandType::submit_market:
-  case CommandType::replace:
     return trade_capacity_ + 1U;
+  case CommandType::replace: {
+    const Handle handle{payload.handle_index, payload.handle_generation};
+    return order_book_.order_info(handle).has_value() ? std::max<std::size_t>(trade_capacity_, 1U)
+                                                      : 1U;
+  }
   case CommandType::cancel:
   case CommandType::amend_quantity:
     return 1U;
@@ -50,6 +62,9 @@ void SequencedEngine::write_submit_events(const SequencedCommand& command,
 
 ApplyResult SequencedEngine::apply(const SequencedCommand& command,
                                    std::span<EngineEvent> events) noexcept {
+  if (sequence_exhausted_) {
+    return {ApplyStatus::sequence_exhausted, 0U};
+  }
   if (validate_command_payload(command.payload) != CommandValidationError::none) {
     return {ApplyStatus::invalid_command, 0U};
   }
@@ -59,7 +74,7 @@ ApplyResult SequencedEngine::apply(const SequencedCommand& command,
   if (command.logical_time < last_logical_time_) {
     return {ApplyStatus::decreasing_logical_time, 0U};
   }
-  const std::size_t required = maximum_event_count(command.payload.tag);
+  const std::size_t required = maximum_event_count(command.payload);
   if (events.size() < required) {
     return {ApplyStatus::insufficient_event_capacity, 0U};
   }
@@ -121,7 +136,9 @@ ApplyResult SequencedEngine::apply(const SequencedCommand& command,
     break;
   }
   }
-  if (next_sequence_ != std::numeric_limits<std::uint64_t>::max()) {
+  if (next_sequence_ == std::numeric_limits<std::uint64_t>::max()) {
+    sequence_exhausted_ = true;
+  } else {
     ++next_sequence_;
   }
   last_logical_time_ = command.logical_time;

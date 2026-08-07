@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 #include <limits>
 #include <span>
+#include <stdexcept>
 #include <type_traits>
 
 namespace matching_engine {
@@ -207,6 +208,116 @@ TEST_F(SequencedEngineTest, RejectsNoncanonicalCommandBeforeMutation) {
 
   EXPECT_EQ(engine.apply(*command, events), (ApplyResult{ApplyStatus::invalid_command, 0U}));
   EXPECT_EQ(engine.order_book().check_invariants().reachable_count, 0U);
+}
+
+TEST(SequencedEngineCapacityTest, MarketRequiresResultPlusEveryPossibleMaker) {
+  SequencedEngine engine{PriceDomain{Price{100}, 11U}, 2U, Quantity{100U}};
+  std::array<EngineEvent, 3> events{};
+  ASSERT_EQ(
+      engine
+          .apply({CommandPayload::submit_limit(OrderId{1}, Side::sell, Price{104}, Quantity{1}),
+                  Sequence{1}, 1U},
+                 events)
+          .status,
+      ApplyStatus::applied);
+  ASSERT_EQ(
+      engine
+          .apply({CommandPayload::submit_limit(OrderId{2}, Side::sell, Price{105}, Quantity{1}),
+                  Sequence{2}, 2U},
+                 events)
+          .status,
+      ApplyStatus::applied);
+  const SequencedCommand market{CommandPayload::submit_market(OrderId{3}, Side::buy, Quantity{2}),
+                                Sequence{3}, 3U};
+
+  EXPECT_EQ(engine.apply(market, std::span<EngineEvent>{events}.first(2U)),
+            (ApplyResult{ApplyStatus::insufficient_event_capacity, 0U}));
+  EXPECT_EQ(engine.order_book().best_ask(), Price{104});
+
+  EXPECT_EQ(engine.apply(market, events), (ApplyResult{ApplyStatus::applied, 3U}));
+  EXPECT_EQ(engine.order_book().best_ask(), std::nullopt);
+}
+
+TEST(SequencedEngineCapacityTest, LiveReplaceNeedsAtMostArenaCapacityTotalEvents) {
+  SequencedEngine engine{PriceDomain{Price{100}, 11U}, 3U, Quantity{100U}};
+  std::array<EngineEvent, 4> events{};
+  ASSERT_EQ(
+      engine
+          .apply({CommandPayload::submit_limit(OrderId{1}, Side::buy, Price{100}, Quantity{3}),
+                  Sequence{1}, 1U},
+                 events)
+          .status,
+      ApplyStatus::applied);
+  const Handle replaced = events[0].handle;
+  ASSERT_EQ(
+      engine
+          .apply({CommandPayload::submit_limit(OrderId{2}, Side::sell, Price{103}, Quantity{1}),
+                  Sequence{2}, 2U},
+                 events)
+          .status,
+      ApplyStatus::applied);
+  ASSERT_EQ(
+      engine
+          .apply({CommandPayload::submit_limit(OrderId{3}, Side::sell, Price{104}, Quantity{1}),
+                  Sequence{3}, 3U},
+                 events)
+          .status,
+      ApplyStatus::applied);
+  const SequencedCommand replace{CommandPayload::replace(replaced, Price{105}, Quantity{2}),
+                                 Sequence{4}, 4U};
+
+  EXPECT_EQ(engine.apply(replace, std::span<EngineEvent>{events}.first(2U)),
+            (ApplyResult{ApplyStatus::insufficient_event_capacity, 0U}));
+  EXPECT_EQ(engine.order_book().order_info(replaced)->remaining, Quantity{3});
+
+  EXPECT_EQ(engine.apply(replace, std::span<EngineEvent>{events}.first(3U)),
+            (ApplyResult{ApplyStatus::applied, 3U}));
+  EXPECT_EQ(events[1].type, EngineEventType::trade);
+  EXPECT_EQ(events[2].type, EngineEventType::trade);
+}
+
+TEST(SequencedEngineCapacityTest, InvalidReplaceAndZeroArenaNeedOneEvent) {
+  std::array<EngineEvent, 1> event{};
+  SequencedEngine empty{PriceDomain{Price{100}, 1U}, 0U, Quantity{100U}};
+  const SequencedCommand replace{CommandPayload::replace(Handle{0, 1}, Price{100}, Quantity{1}),
+                                 Sequence{1}, 1U};
+  EXPECT_EQ(empty.apply(replace, std::span<EngineEvent>{}),
+            (ApplyResult{ApplyStatus::insufficient_event_capacity, 0U}));
+  EXPECT_EQ(empty.apply(replace, event), (ApplyResult{ApplyStatus::applied, 1U}));
+  EXPECT_EQ(event[0].reason, static_cast<std::uint8_t>(RejectReason::invalid_handle));
+
+  const SequencedCommand market{CommandPayload::submit_market(OrderId{1}, Side::buy, Quantity{1}),
+                                Sequence{2}, 2U};
+  EXPECT_EQ(empty.apply(market, std::span<EngineEvent>{}),
+            (ApplyResult{ApplyStatus::insufficient_event_capacity, 0U}));
+  EXPECT_EQ(empty.apply(market, event), (ApplyResult{ApplyStatus::applied, 1U}));
+}
+
+TEST(SequencedEngineSequenceTest, AcceptsMaximumOnceThenRemainsExhausted) {
+  SequencedEngine engine{PriceDomain{Price{100}, 1U}, 0U, Quantity{100U},
+                         Sequence{std::numeric_limits<std::uint64_t>::max()}, 7U};
+  std::array<EngineEvent, 1> event{};
+  const SequencedCommand final{CommandPayload::submit_market(OrderId{1}, Side::buy, Quantity{1}),
+                               Sequence{std::numeric_limits<std::uint64_t>::max()}, 7U};
+  EXPECT_EQ(engine.apply(final, event), (ApplyResult{ApplyStatus::applied, 1U}));
+
+  const InvariantResult before = engine.order_book().check_invariants();
+  EXPECT_EQ(engine.apply(final, event), (ApplyResult{ApplyStatus::sequence_exhausted, 0U}));
+  EXPECT_EQ(engine.order_book().check_invariants(), before);
+}
+
+TEST(SequencedEngineSequenceTest, RejectsSequenceZeroAtInitialState) {
+  SequencedEngine engine{PriceDomain{Price{100}, 1U}, 0U, Quantity{100U}};
+  std::array<EngineEvent, 1> event{};
+  EXPECT_EQ(engine.apply({CommandPayload::submit_market(OrderId{1}, Side::buy, Quantity{1}),
+                          Sequence{0}, 0U},
+                         event),
+            (ApplyResult{ApplyStatus::invalid_sequence, 0U}));
+}
+
+TEST(SequencedEngineSequenceTest, RejectsConfiguredInitialSequenceZero) {
+  EXPECT_THROW((SequencedEngine{PriceDomain{Price{100}, 1U}, 0U, Quantity{100U}, Sequence{0}, 0U}),
+               std::invalid_argument);
 }
 
 } // namespace

@@ -38,6 +38,9 @@ enum class JournalError : std::uint8_t {
   unsupported_platform,
   map_failed,
   io_error,
+  locked,
+  commit_indeterminate,
+  writer_poisoned,
   corrupt_record,
   full,
   invalid_command,
@@ -47,16 +50,47 @@ enum class JournalError : std::uint8_t {
   closed,
 };
 
+struct JournalOpenFailure {
+  JournalError operation{JournalError::none};
+  JournalError cleanup{JournalError::none};
+
+  constexpr bool operator==(const JournalOpenFailure&) const noexcept = default;
+};
+
+[[nodiscard]] constexpr bool operator==(JournalOpenFailure failure, JournalError error) noexcept {
+  return failure.operation == error;
+}
+
 [[nodiscard]] const char* journal_error_message(JournalError error) noexcept;
+[[nodiscard]] const char* journal_error_message(JournalOpenFailure failure) noexcept;
 [[nodiscard]] std::uint32_t crc32c(std::span<const std::byte> bytes) noexcept;
 
-// One process/thread owns a journal writer. Concurrent access and cross-process
-// writer coordination are intentionally unsupported.
+#if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
+namespace journal_testing {
+
+enum class SyncPoint : std::uint8_t {
+  create_header,
+  append_pre_publish,
+  append_post_publish,
+};
+
+enum class CleanupPoint : std::uint8_t {
+  unlink_created_path,
+};
+
+void fail_next_sync(SyncPoint point) noexcept;
+void fail_next_cleanup(CleanupPoint point) noexcept;
+
+} // namespace journal_testing
+#endif
+
+// One thread owns a journal writer. A retained advisory file lock excludes
+// cooperating opens, but concurrent access remains unsupported.
 class MmapJournal {
 public:
-  [[nodiscard]] static std::expected<MmapJournal, JournalError>
+  [[nodiscard]] static std::expected<MmapJournal, JournalOpenFailure>
   create(const std::filesystem::path& path, std::uint64_t capacity) noexcept;
-  [[nodiscard]] static std::expected<MmapJournal, JournalError>
+  [[nodiscard]] static std::expected<MmapJournal, JournalOpenFailure>
   open(const std::filesystem::path& path) noexcept;
 
   MmapJournal(const MmapJournal&) = delete;
@@ -88,6 +122,7 @@ private:
   std::uint64_t capacity_{};
   std::uint64_t size_{};
   std::uint64_t last_logical_time_{};
+  bool writer_poisoned_{};
 };
 
 } // namespace matching_engine

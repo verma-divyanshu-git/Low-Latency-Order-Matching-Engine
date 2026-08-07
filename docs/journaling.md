@@ -25,7 +25,10 @@ It never reads a clock.
 It rejects decreasing logical time, invalid payloads, and sequence exhaustion without advancing its state.
 
 `SequencedEngine::apply` validates the command and preflights caller event capacity before mutating the book.
-Submission and replacement callers provide one result slot plus the book's maximum trade count.
+Limit and market submissions provide one result slot plus the book's maximum live-order capacity because each maker can produce one trade.
+A valid replacement first removes its resting order, so its exact worst-case total is the arena capacity: one result plus at most capacity minus one trades.
+An invalid replacement needs only its single rejection result.
+With a zero-capacity arena, every command needs one result slot.
 Cancel and amend callers provide one result slot.
 The engine owns its fixed trade scratch storage from construction, so `apply` performs no allocation.
 Each stream starts with a result event and then contains trades in exact matching order, with command sequence and zero-based or increasing per-command event indexes.
@@ -57,14 +60,15 @@ Each record is 80 bytes:
 - Offset 64, 16 bytes: reserved zeros.
 
 The committed marker has little-endian numeric value `0x54494d43`.
-Zero and every other marker value are treated as uncommitted or torn.
+Exactly zero is a clean uncommitted end marker.
+Every marker other than exact zero or the exact committed value is corruption.
 CRC32C uses the Castagnoli polynomial and is integrity and accidental-error detection only.
 It is not a cryptographic authenticator and does not protect against deliberate modification.
 
 Capacity is fixed at creation from 1 through 1,000,000 records.
 The maximum file size is 80,000,064 bytes.
 Creation uses exclusive creation, mode `0600`, close-on-exec, and no-follow behavior where the platform supplies it.
-Only regular files with exact mode `0600`, exact size, and a valid canonical header are accepted.
+Only regular files with exact mode `0600`, including no set-user-ID, set-group-ID, or sticky bits, exact size, and a valid canonical header are accepted.
 The implementation supports macOS and Linux.
 
 ## Append, recovery, and durability
@@ -75,9 +79,13 @@ Applying before append can produce state that recovery cannot reconstruct.
 Append writes an uncommitted record, synchronizes its payload and CRC, publishes the commit marker last, then synchronizes again.
 It checks mapping, synchronization, file synchronization, truncation, open, and explicit close failures.
 A full journal and validation failures do not mutate append state.
+A synchronization failure before marker publication is definitely uncommitted and the same slot may be retried.
+A synchronization failure after marker publication returns `commit_indeterminate`.
+The writer is then poisoned and refuses every append until it is closed and reopened so recovery can determine whether the record is present.
+The implementation does not rewrite the marker to manufacture certainty after a failed commit synchronization.
 
 Recovery scans from slot zero and requires sequences `1, 2, ...`, nondecreasing logical time, valid CRC, canonical payload bytes, and zero reserved bytes.
-It stops at the first uncommitted or torn marker.
+It stops only at an exact zero marker.
 A malformed committed record is corruption and recovery stops with an error.
 Recovery never skips a committed corrupt record and does not trust a header count.
 
@@ -86,7 +94,10 @@ It cannot guarantee survival against defective hardware, storage devices that li
 The protocol detects incomplete records under the assumed ordered flush behavior, but it is not a replicated consensus log.
 
 The journal has one writer owned by one process and one thread.
-There is no interprocess lock or concurrent append support.
+Create and open acquire a nonblocking exclusive `flock` that remains attached to the journal file descriptor for its lifetime.
+The lock is advisory: cooperating processes using this API are excluded, but unrelated software can ignore advisory locks and access the file.
+Separate opens in the same process are also rejected while the owner remains open.
+There is no concurrent append support.
 Indexed reads return decoded command values, not views into the mapping.
 
 ## Operational policy
@@ -95,3 +106,6 @@ Treat journal corruption as a stop condition requiring operator investigation an
 Do not rewrite, skip, or guess past corruption.
 Protect the containing directory as well as the `0600` file.
 Capacity exhaustion is explicit and requires planned rotation in a future snapshot and compaction phase.
+Create and open errors report the primary operation failure separately from cleanup failure.
+Failed creation attempts unmap, close, and unlink in order, checking each result.
+If cleanup itself fails, the caller receives that fact explicitly and must inspect or remove any remaining path rather than assuming cleanup succeeded.

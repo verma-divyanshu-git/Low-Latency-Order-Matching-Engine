@@ -49,6 +49,7 @@ enum class ApplyStatus : std::uint8_t {
   applied,
   invalid_command,
   invalid_sequence,
+  sequence_exhausted,
   decreasing_logical_time,
   insufficient_event_capacity,
 };
@@ -62,7 +63,8 @@ struct ApplyResult {
 
 class SequencedEngine {
 public:
-  SequencedEngine(PriceDomain domain, std::size_t max_orders, Quantity max_order_quantity);
+  SequencedEngine(PriceDomain domain, std::size_t max_orders, Quantity max_order_quantity,
+                  Sequence next_sequence = Sequence{1U}, std::uint64_t last_logical_time = 0U);
 
   SequencedEngine(const SequencedEngine&) = delete;
   SequencedEngine& operator=(const SequencedEngine&) = delete;
@@ -79,7 +81,7 @@ public:
   }
 
 private:
-  [[nodiscard]] std::size_t maximum_event_count(CommandType type) const noexcept;
+  [[nodiscard]] std::size_t maximum_event_count(const CommandPayload& payload) const noexcept;
   void write_submit_events(const SequencedCommand& command, const SubmitResult& result,
                            std::span<EngineEvent> events) noexcept;
 
@@ -88,6 +90,7 @@ private:
   std::size_t trade_capacity_;
   std::uint64_t next_sequence_{1U};
   std::uint64_t last_logical_time_{};
+  bool sequence_exhausted_{};
 };
 
 static_assert(std::is_trivially_copyable_v<EngineEvent>);

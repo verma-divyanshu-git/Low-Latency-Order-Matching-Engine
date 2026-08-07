@@ -25,10 +25,10 @@ Persistence is a separate `matching_engine::persistence` library.
 The core library does not link it.
 The journal is a fixed-capacity 64-byte header followed by 80-byte records.
 Records publish a commit marker only after command bytes and CRC32C have been synchronized.
-Recovery scans contiguous records and stops at the first uncommitted marker while treating malformed committed data as fatal corruption.
+Recovery scans contiguous records and stops only at an exact zero marker while treating every other malformed marker or committed record as fatal corruption.
 
 Applications must append successfully before applying the command.
-The journal permits one writer in one process and thread.
+The journal permits one writer in one process and thread and retains a nonblocking advisory exclusive file lock for its open lifetime.
 
 ## Consequences
 
@@ -39,9 +39,12 @@ Fixed capacity and full-span synchronization make the first implementation inten
 CRC32C detects accidental corruption and torn writes under the documented crash model.
 It is not cryptographic integrity and cannot defend against an attacker who can rewrite the file.
 `msync` and `fsync` durability still depends on filesystem and hardware behavior.
+A failed synchronization after marker publication is explicitly indeterminate and poisons that writer until reopen recovery determines the record boundary.
+No rollback write is used to claim that an uncertain commit is absent.
 
-Mode `0600`, regular-file checks, exclusive creation, close-on-exec, and no-follow opening reduce local file hazards.
+Mode `0600` including special-bit rejection, regular-file checks, exclusive creation, close-on-exec, no-follow opening, and advisory ownership locking reduce local file hazards.
 They do not replace directory permissions or host access control.
+Advisory locks exclude cooperating opens but cannot prevent access by software that ignores them.
 
 There is no snapshot, compaction, rotation, replication, authentication, or automatic corruption repair in this phase.
 Those capabilities must preserve this log's ordering and corruption policy if added.

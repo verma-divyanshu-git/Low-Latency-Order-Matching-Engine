@@ -133,6 +133,10 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
   gtest_discover_tests(matching_engine_core_tests)
 
   add_executable(matching_engine_persistence_tests tests/journal_test.cpp)
+  target_compile_definitions(
+    matching_engine_persistence PRIVATE MATCHING_ENGINE_TEST_FAILPOINTS)
+  target_compile_definitions(
+    matching_engine_persistence_tests PRIVATE MATCHING_ENGINE_TEST_FAILPOINTS)
   target_link_libraries(
     matching_engine_persistence_tests PRIVATE matching_engine::persistence GTest::gtest_main)
   engine_configure_target(matching_engine_persistence_tests)

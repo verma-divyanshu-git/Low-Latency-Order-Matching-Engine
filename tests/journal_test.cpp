@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -55,13 +56,15 @@ void overwrite_byte(const std::filesystem::path& path, std::uint64_t offset, std
 }
 
 void overwrite_record_byte_and_recompute_crc(const std::filesystem::path& path,
-                                             std::size_t record_offset, std::byte value) {
+                                             std::uint64_t record_index, std::size_t record_offset,
+                                             std::byte value) {
   const int descriptor = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
   ASSERT_GE(descriptor, 0);
   std::array<std::byte, kJournalRecordSize> record{};
-  ASSERT_EQ(
-      ::pread(descriptor, record.data(), record.size(), static_cast<off_t>(kJournalHeaderSize)),
-      static_cast<ssize_t>(record.size()));
+  const auto file_offset =
+      static_cast<off_t>(kJournalHeaderSize + record_index * kJournalRecordSize);
+  ASSERT_EQ(::pread(descriptor, record.data(), record.size(), file_offset),
+            static_cast<ssize_t>(record.size()));
   record[record_offset] = value;
   const std::uint32_t crc = crc32c(std::span<const std::byte>{record}.subspan(
       static_cast<std::size_t>(kRecordSequenceOffset),
@@ -70,9 +73,8 @@ void overwrite_record_byte_and_recompute_crc(const std::filesystem::path& path,
     record[static_cast<std::size_t>(kRecordCrcOffset) + index] =
         static_cast<std::byte>((crc >> (index * 8U)) & 0xffU);
   }
-  ASSERT_EQ(
-      ::pwrite(descriptor, record.data(), record.size(), static_cast<off_t>(kJournalHeaderSize)),
-      static_cast<ssize_t>(record.size()));
+  ASSERT_EQ(::pwrite(descriptor, record.data(), record.size(), file_offset),
+            static_cast<ssize_t>(record.size()));
   ASSERT_EQ(::fsync(descriptor), 0);
   ASSERT_EQ(::close(descriptor), 0);
 }
@@ -113,6 +115,21 @@ TEST(JournalTest, CreateAppendCloseReopenAndRead) {
   EXPECT_EQ(reopened->append(command(4, 12)), JournalError::full);
 }
 
+TEST(JournalTest, RetainsExclusiveNonblockingOwnershipUntilClose) {
+  TemporaryDirectory temporary;
+  const auto path = temporary.path() / "commands.journal";
+  auto owner = MmapJournal::create(path, 1U);
+  ASSERT_TRUE(owner.has_value());
+
+  const auto second = MmapJournal::open(path);
+  ASSERT_FALSE(second.has_value());
+  EXPECT_EQ(second.error(), JournalError::locked);
+
+  ASSERT_EQ(owner->close(), JournalError::none);
+  auto successor = MmapJournal::open(path);
+  ASSERT_TRUE(successor.has_value());
+}
+
 TEST(JournalTest, RejectsInvalidCapacityAndExistingPathWithoutMutation) {
   TemporaryDirectory temporary;
   const auto path = temporary.path() / "commands.journal";
@@ -150,6 +167,20 @@ TEST(JournalTest, RejectsBadPermissionsWhereEnforced) {
   }
 }
 
+TEST(JournalTest, RejectsSpecialPermissionBits) {
+  TemporaryDirectory temporary;
+  const auto path = temporary.path() / "commands.journal";
+  auto created = MmapJournal::create(path, 1U);
+  ASSERT_TRUE(created.has_value());
+  ASSERT_EQ(created->close(), JournalError::none);
+  ASSERT_EQ(::chmod(path.c_str(), 04600), 0);
+  struct stat status{};
+  ASSERT_EQ(::stat(path.c_str(), &status), 0);
+  if ((status.st_mode & 04000) != 0) {
+    EXPECT_EQ(MmapJournal::open(path).error(), JournalError::permission_denied);
+  }
+}
+
 TEST(JournalTest, RejectsHeaderCorruptionReservedBytesAndExactSizeMismatch) {
   TemporaryDirectory temporary;
   const auto path = temporary.path() / "commands.journal";
@@ -184,12 +215,29 @@ TEST(JournalTest, RejectsCommittedNoncanonicalPayloadEvenWithValidCrc) {
   ASSERT_EQ(created->append(command(1, 1)), JournalError::none);
   ASSERT_EQ(created->close(), JournalError::none);
 
-  overwrite_record_byte_and_recompute_crc(path, static_cast<std::size_t>(kRecordPayloadOffset) + 3U,
-                                          std::byte{1});
+  overwrite_record_byte_and_recompute_crc(
+      path, 0U, static_cast<std::size_t>(kRecordPayloadOffset) + 3U, std::byte{1});
   EXPECT_EQ(MmapJournal::open(path).error(), JournalError::corrupt_record);
 }
 
-TEST(JournalTest, StopsAtTornCommitMarkerButNeverSkipsCommittedCorruption) {
+TEST(JournalTest, AcceptsOnlyExactZeroAsCleanEndMarker) {
+  TemporaryDirectory temporary;
+  const auto path = temporary.path() / "commands.journal";
+  auto created = MmapJournal::create(path, 2U);
+  ASSERT_TRUE(created.has_value());
+  ASSERT_EQ(created->append(command(1, 1)), JournalError::none);
+  ASSERT_EQ(created->append(command(2, 2)), JournalError::none);
+  ASSERT_EQ(created->close(), JournalError::none);
+
+  for (std::uint64_t index = 0U; index < 4U; ++index) {
+    overwrite_byte(path, kJournalHeaderSize + kJournalRecordSize + index, std::byte{0});
+  }
+  auto reopened = MmapJournal::open(path);
+  ASSERT_TRUE(reopened.has_value());
+  EXPECT_EQ(reopened->size(), 1U);
+}
+
+TEST(JournalTest, RejectsMalformedNonzeroCommitMarker) {
   TemporaryDirectory temporary;
   const auto path = temporary.path() / "commands.journal";
   auto created = MmapJournal::create(path, 2U);
@@ -199,9 +247,7 @@ TEST(JournalTest, StopsAtTornCommitMarkerButNeverSkipsCommittedCorruption) {
   ASSERT_EQ(created->close(), JournalError::none);
 
   overwrite_byte(path, kJournalHeaderSize + kJournalRecordSize, std::byte{0});
-  auto reopened = MmapJournal::open(path);
-  ASSERT_TRUE(reopened.has_value());
-  EXPECT_EQ(reopened->size(), 1U);
+  EXPECT_EQ(MmapJournal::open(path).error(), JournalError::corrupt_record);
 }
 
 TEST(JournalTest, RejectsCommittedBadSequenceLogicalTimeAndReservedBytes) {
@@ -213,18 +259,18 @@ TEST(JournalTest, RejectsCommittedBadSequenceLogicalTimeAndReservedBytes) {
   ASSERT_EQ(created->append(command(2, 6)), JournalError::none);
   ASSERT_EQ(created->close(), JournalError::none);
 
-  overwrite_byte(path, kJournalHeaderSize + kJournalRecordSize + kRecordSequenceOffset,
-                 std::byte{3});
+  overwrite_record_byte_and_recompute_crc(path, 1U, static_cast<std::size_t>(kRecordSequenceOffset),
+                                          std::byte{3});
   EXPECT_EQ(MmapJournal::open(path).error(), JournalError::corrupt_record);
 
-  overwrite_byte(path, kJournalHeaderSize + kJournalRecordSize + kRecordSequenceOffset,
-                 std::byte{2});
-  overwrite_byte(path, kJournalHeaderSize + kJournalRecordSize + kRecordLogicalTimeOffset,
-                 std::byte{4});
+  overwrite_record_byte_and_recompute_crc(path, 1U, static_cast<std::size_t>(kRecordSequenceOffset),
+                                          std::byte{2});
+  overwrite_record_byte_and_recompute_crc(
+      path, 1U, static_cast<std::size_t>(kRecordLogicalTimeOffset), std::byte{4});
   EXPECT_EQ(MmapJournal::open(path).error(), JournalError::corrupt_record);
 
-  overwrite_byte(path, kJournalHeaderSize + kJournalRecordSize + kRecordLogicalTimeOffset,
-                 std::byte{6});
+  overwrite_record_byte_and_recompute_crc(
+      path, 1U, static_cast<std::size_t>(kRecordLogicalTimeOffset), std::byte{6});
   overwrite_byte(path, kJournalHeaderSize + kJournalRecordSize + kRecordReservedOffset,
                  std::byte{1});
   EXPECT_EQ(MmapJournal::open(path).error(), JournalError::corrupt_record);
@@ -240,39 +286,131 @@ TEST(JournalTest, AppendRejectsSequenceAndTimeDiscontinuityWithoutMutation) {
   EXPECT_EQ(created->size(), 1U);
 }
 
+TEST(JournalTest, PrePublishSyncFailureIsDefinitelyUncommittedAndRetryable) {
+  TemporaryDirectory temporary;
+  auto created = MmapJournal::create(temporary.path() / "commands.journal", 1U);
+  ASSERT_TRUE(created.has_value());
+  journal_testing::fail_next_sync(journal_testing::SyncPoint::append_pre_publish);
+
+  EXPECT_EQ(created->append(command(1, 1)), JournalError::io_error);
+  EXPECT_EQ(created->size(), 0U);
+  EXPECT_EQ(created->append(command(1, 1)), JournalError::none);
+}
+
+TEST(JournalTest, PostPublishSyncFailurePoisonsWriterUntilRecovery) {
+  TemporaryDirectory temporary;
+  const auto path = temporary.path() / "commands.journal";
+  auto created = MmapJournal::create(path, 2U);
+  ASSERT_TRUE(created.has_value());
+  journal_testing::fail_next_sync(journal_testing::SyncPoint::append_post_publish);
+
+  EXPECT_EQ(created->append(command(1, 1)), JournalError::commit_indeterminate);
+  EXPECT_EQ(created->append(command(1, 1)), JournalError::writer_poisoned);
+  ASSERT_EQ(created->close(), JournalError::none);
+
+  auto reopened = MmapJournal::open(path);
+  ASSERT_TRUE(reopened.has_value());
+  EXPECT_EQ(reopened->size(), 1U);
+  EXPECT_EQ(*reopened->read(0U), command(1, 1));
+  EXPECT_EQ(reopened->append(command(2, 2)), JournalError::none);
+}
+
+TEST(JournalTest, FailedCreationRemovesPathAndReportsCleanupSeparately) {
+  TemporaryDirectory temporary;
+  const auto path = temporary.path() / "commands.journal";
+  journal_testing::fail_next_sync(journal_testing::SyncPoint::create_header);
+
+  const auto created = MmapJournal::create(path, 1U);
+
+  ASSERT_FALSE(created.has_value());
+  EXPECT_EQ(created.error().operation, JournalError::io_error);
+  EXPECT_EQ(created.error().cleanup, JournalError::none);
+  EXPECT_FALSE(std::filesystem::exists(path));
+}
+
+TEST(JournalTest, FailedCreationPreservesPrimaryAndReportsCleanupFailure) {
+  TemporaryDirectory temporary;
+  const auto path = temporary.path() / "commands.journal";
+  journal_testing::fail_next_sync(journal_testing::SyncPoint::create_header);
+  journal_testing::fail_next_cleanup(journal_testing::CleanupPoint::unlink_created_path);
+
+  const auto created = MmapJournal::create(path, 1U);
+
+  ASSERT_FALSE(created.has_value());
+  EXPECT_EQ(created.error().operation, JournalError::io_error);
+  EXPECT_EQ(created.error().cleanup, JournalError::io_error);
+  EXPECT_TRUE(std::filesystem::exists(path));
+}
+
 TEST(JournalTest, EndToEndAppendBeforeApplyReplaysIdentically) {
   TemporaryDirectory temporary;
   const auto path = temporary.path() / "commands.journal";
-  auto journal = MmapJournal::create(path, 4U);
+  auto journal = MmapJournal::create(path, 8U);
   ASSERT_TRUE(journal.has_value());
   Sequencer sequencer;
-  SequencedEngine live{PriceDomain{Price{100}, 11U}, 4U, Quantity{100U}};
-  std::array<EngineEvent, 5> live_buffer{};
-  std::array<EngineEvent, 8> live_events{};
+  SequencedEngine live{PriceDomain{Price{100}, 11U}, 6U, Quantity{100U}};
+  std::array<EngineEvent, 7> live_buffer{};
+  std::array<EngineEvent, 24> live_events{};
   std::size_t live_count{};
-  const std::array payloads{
-      CommandPayload::submit_limit(OrderId{1}, Side::sell, Price{104}, Quantity{3}),
-      CommandPayload::submit_limit(OrderId{2}, Side::buy, Price{104}, Quantity{5}),
-      CommandPayload::amend_quantity(Handle{0, 2}, Quantity{1}),
-      CommandPayload::cancel(Handle{0, 2}),
-  };
-  for (const CommandPayload& payload : payloads) {
+  auto append_apply = [&](const CommandPayload& payload) {
     const auto stamped = sequencer.stamp(payload, sequencer.last_logical_time() + 1U);
-    ASSERT_TRUE(stamped.has_value());
-    ASSERT_EQ(journal->append(*stamped), JournalError::none);
+    EXPECT_TRUE(stamped.has_value());
+    if (!stamped.has_value()) {
+      return ApplyResult{ApplyStatus::invalid_command, 0U};
+    }
+    EXPECT_EQ(journal->append(*stamped), JournalError::none);
     const ApplyResult applied = live.apply(*stamped, live_buffer);
-    ASSERT_EQ(applied.status, ApplyStatus::applied);
-    for (std::size_t index = 0; index < applied.event_count; ++index) {
+    EXPECT_EQ(applied.status, ApplyStatus::applied);
+    for (std::size_t index = 0U; index < applied.event_count; ++index) {
       live_events[live_count++] = live_buffer[index];
     }
-  }
+    return applied;
+  };
+
+  ASSERT_EQ(
+      append_apply(CommandPayload::submit_limit(OrderId{1}, Side::sell, Price{104}, Quantity{3}))
+          .status,
+      ApplyStatus::applied);
+  ASSERT_EQ(
+      append_apply(CommandPayload::submit_limit(OrderId{2}, Side::buy, Price{101}, Quantity{5}))
+          .status,
+      ApplyStatus::applied);
+  const Handle original_bid = live_buffer[0].handle;
+  ASSERT_EQ(append_apply(CommandPayload::submit_market(OrderId{3}, Side::buy, Quantity{2})).status,
+            ApplyStatus::applied);
+  ASSERT_EQ(append_apply(CommandPayload::submit_limit(OrderId{4}, Side::buy, Price{104},
+                                                      Quantity{2}, TimeInForce::fok))
+                .status,
+            ApplyStatus::applied);
+  EXPECT_EQ(live_buffer[0].reason, static_cast<std::uint8_t>(RejectReason::fok_not_fillable));
+  ASSERT_EQ(append_apply(CommandPayload::cancel(Handle{kInvalidIndex, 99U})).status,
+            ApplyStatus::applied);
+  EXPECT_EQ(live_buffer[0].reason, static_cast<std::uint8_t>(CancelReason::invalid_handle));
+  ASSERT_EQ(append_apply(CommandPayload::replace(original_bid, Price{102}, Quantity{4})).status,
+            ApplyStatus::applied);
+  const Handle replacement_bid = live_buffer[0].handle;
+  ASSERT_NE(replacement_bid, original_bid);
+  ASSERT_EQ(
+      append_apply(CommandPayload::submit_limit(OrderId{5}, Side::sell, Price{102}, Quantity{2}))
+          .status,
+      ApplyStatus::applied);
+  ASSERT_EQ(
+      append_apply(CommandPayload::submit_limit(OrderId{6}, Side::sell, Price{106}, Quantity{4}))
+          .status,
+      ApplyStatus::applied);
+  const Handle retained_ask = live_buffer[0].handle;
+  const std::array active_handles{replacement_bid, retained_ask};
+  const std::array active_info{live.order_book().order_info(replacement_bid),
+                               live.order_book().order_info(retained_ask)};
+  ASSERT_TRUE(active_info[0].has_value());
+  ASSERT_TRUE(active_info[1].has_value());
   ASSERT_EQ(journal->close(), JournalError::none);
 
   auto reopened = MmapJournal::open(path);
   ASSERT_TRUE(reopened.has_value());
-  SequencedEngine replay{PriceDomain{Price{100}, 11U}, 4U, Quantity{100U}};
-  std::array<EngineEvent, 5> replay_buffer{};
-  std::array<EngineEvent, 8> replay_events{};
+  SequencedEngine replay{PriceDomain{Price{100}, 11U}, 6U, Quantity{100U}};
+  std::array<EngineEvent, 7> replay_buffer{};
+  std::array<EngineEvent, 24> replay_events{};
   std::size_t replay_count{};
   for (std::uint64_t index = 0; index < reopened->size(); ++index) {
     const auto replayed = reopened->read(index);
@@ -285,12 +423,25 @@ TEST(JournalTest, EndToEndAppendBeforeApplyReplaysIdentically) {
   }
 
   EXPECT_EQ(replay_count, live_count);
-  EXPECT_TRUE(
-      std::equal(live_events.begin(), live_events.begin() + live_count, replay_events.begin()));
+  for (std::size_t index = 0U; index < live_count; ++index) {
+    EXPECT_EQ(replay_events[index], live_events[index]);
+    const auto replay_bytes =
+        std::bit_cast<std::array<std::byte, sizeof(EngineEvent)>>(replay_events[index]);
+    const auto live_bytes =
+        std::bit_cast<std::array<std::byte, sizeof(EngineEvent)>>(live_events[index]);
+    EXPECT_EQ(replay_bytes, live_bytes);
+  }
   EXPECT_EQ(replay.order_book().best_bid(), live.order_book().best_bid());
   EXPECT_EQ(replay.order_book().best_ask(), live.order_book().best_ask());
-  EXPECT_EQ(replay.order_book().level_info(Side::buy, Price{104}),
-            live.order_book().level_info(Side::buy, Price{104}));
+  for (const Handle handle : active_handles) {
+    EXPECT_EQ(replay.order_book().order_info(handle), live.order_book().order_info(handle));
+  }
+  for (std::int64_t ticks = 100; ticks <= 110; ++ticks) {
+    EXPECT_EQ(replay.order_book().level_info(Side::buy, Price{ticks}),
+              live.order_book().level_info(Side::buy, Price{ticks}));
+    EXPECT_EQ(replay.order_book().level_info(Side::sell, Price{ticks}),
+              live.order_book().level_info(Side::sell, Price{ticks}));
+  }
   EXPECT_EQ(replay.order_book().check_invariants(), live.order_book().check_invariants());
 }
 

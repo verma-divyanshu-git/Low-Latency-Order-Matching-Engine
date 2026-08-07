@@ -8,6 +8,10 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <limits>
+#if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
+#include <atomic>
+#endif
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -20,6 +24,40 @@ constexpr std::array<std::byte, 8> kMagic{std::byte{'M'}, std::byte{'E'}, std::b
                                           std::byte{'N'}, std::byte{'L'}, std::byte{'4'},
                                           std::byte{'A'}, std::byte{0}};
 constexpr std::uint32_t kCommittedMarker = 0x54494d43U;
+
+#if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
+std::atomic<journal_testing::SyncPoint> sync_failpoint{
+    static_cast<journal_testing::SyncPoint>(0xffU)};
+std::atomic<journal_testing::CleanupPoint> cleanup_failpoint{
+    static_cast<journal_testing::CleanupPoint>(0xffU)};
+
+[[nodiscard]] bool consume_sync_failpoint(journal_testing::SyncPoint point) noexcept {
+  journal_testing::SyncPoint expected = point;
+  return sync_failpoint.compare_exchange_strong(expected,
+                                                static_cast<journal_testing::SyncPoint>(0xffU));
+}
+
+[[nodiscard]] bool consume_cleanup_failpoint(journal_testing::CleanupPoint point) noexcept {
+  journal_testing::CleanupPoint expected = point;
+  return cleanup_failpoint.compare_exchange_strong(
+      expected, static_cast<journal_testing::CleanupPoint>(0xffU));
+}
+#endif
+
+[[nodiscard]] int sync_mapping(std::byte* mapping, std::size_t size
+#if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
+                               ,
+                               journal_testing::SyncPoint point
+#endif
+                               ) noexcept {
+#if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
+  if (consume_sync_failpoint(point)) {
+    errno = EIO;
+    return -1;
+  }
+#endif
+  return ::msync(mapping, size, MS_SYNC);
+}
 
 void write_u32(std::span<std::byte> output, std::size_t offset, std::uint32_t value) noexcept {
   for (std::size_t index = 0; index < 4U; ++index) {
@@ -80,6 +118,39 @@ void write_u64(std::span<std::byte> output, std::size_t offset, std::uint64_t va
   return JournalError::io_error;
 }
 
+[[nodiscard]] JournalError acquire_ownership_lock(int descriptor) noexcept {
+  if (::flock(descriptor, LOCK_EX | LOCK_NB) == 0) {
+    return JournalError::none;
+  }
+  return errno == EWOULDBLOCK || errno == EAGAIN ? JournalError::locked : errno_error(errno);
+}
+
+[[nodiscard]] bool unlink_created_path(const std::filesystem::path& path) noexcept {
+#if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
+  if (consume_cleanup_failpoint(journal_testing::CleanupPoint::unlink_created_path)) {
+    return false;
+  }
+#endif
+  return ::unlink(path.c_str()) == 0;
+}
+
+[[nodiscard]] JournalOpenFailure
+cleanup_after_open_failure(JournalError operation, int descriptor, std::byte* mapping,
+                           std::size_t mapping_size,
+                           const std::filesystem::path* created_path) noexcept {
+  JournalError cleanup = JournalError::none;
+  if (mapping != nullptr && ::munmap(mapping, mapping_size) != 0) {
+    cleanup = JournalError::io_error;
+  }
+  if (descriptor >= 0 && ::close(descriptor) != 0) {
+    cleanup = JournalError::io_error;
+  }
+  if (created_path != nullptr && !unlink_created_path(*created_path)) {
+    cleanup = JournalError::io_error;
+  }
+  return {.operation = operation, .cleanup = cleanup};
+}
+
 [[nodiscard]] bool checked_file_size(std::uint64_t capacity, std::size_t& size) noexcept {
   if (capacity == 0U || capacity > kMaximumJournalCapacity) {
     return false;
@@ -116,7 +187,7 @@ void write_u64(std::span<std::byte> output, std::size_t offset, std::uint64_t va
   if (!S_ISREG(status.st_mode)) {
     return JournalError::not_regular_file;
   }
-  if ((status.st_mode & 0777) != 0600) {
+  if ((status.st_mode & 07777) != 0600) {
     return JournalError::permission_denied;
   }
   return JournalError::none;
@@ -152,7 +223,7 @@ void write_u64(std::span<std::byte> output, std::size_t offset, std::uint64_t va
 [[nodiscard]] std::expected<SequencedCommand, JournalError>
 decode_record(std::span<const std::byte> record) noexcept {
   if (read_u32(record, static_cast<std::size_t>(kRecordCommitOffset)) != kCommittedMarker) {
-    return std::unexpected{JournalError::out_of_range};
+    return std::unexpected{JournalError::corrupt_record};
   }
   if (read_u32(record, static_cast<std::size_t>(kRecordPayloadLengthOffset)) !=
           kEncodedCommandPayloadSize ||
@@ -207,6 +278,12 @@ const char* journal_error_message(JournalError error) noexcept {
     return "mmap failed";
   case JournalError::io_error:
     return "I/O error";
+  case JournalError::locked:
+    return "journal is owned by another open writer";
+  case JournalError::commit_indeterminate:
+    return "commit durability is indeterminate; close and recover";
+  case JournalError::writer_poisoned:
+    return "writer is poisoned; close and recover";
   case JournalError::corrupt_record:
     return "corrupt committed record";
   case JournalError::full:
@@ -224,6 +301,20 @@ const char* journal_error_message(JournalError error) noexcept {
   }
   return "unknown journal error";
 }
+
+const char* journal_error_message(JournalOpenFailure failure) noexcept {
+  return journal_error_message(failure.operation);
+}
+
+#if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
+void journal_testing::fail_next_sync(SyncPoint point) noexcept {
+  sync_failpoint.store(point);
+}
+
+void journal_testing::fail_next_cleanup(CleanupPoint point) noexcept {
+  cleanup_failpoint.store(point);
+}
+#endif
 
 std::uint32_t crc32c(std::span<const std::byte> bytes) noexcept {
   std::uint32_t crc = 0xffffffffU;
@@ -247,7 +338,8 @@ MmapJournal::MmapJournal(MmapJournal&& other) noexcept
       mapping_{std::exchange(other.mapping_, nullptr)},
       mapping_size_{std::exchange(other.mapping_size_, 0U)},
       capacity_{std::exchange(other.capacity_, 0U)}, size_{std::exchange(other.size_, 0U)},
-      last_logical_time_{std::exchange(other.last_logical_time_, 0U)} {}
+      last_logical_time_{std::exchange(other.last_logical_time_, 0U)},
+      writer_poisoned_{std::exchange(other.writer_poisoned_, false)} {}
 
 MmapJournal& MmapJournal::operator=(MmapJournal&& other) noexcept {
   if (this != &other) {
@@ -258,6 +350,7 @@ MmapJournal& MmapJournal::operator=(MmapJournal&& other) noexcept {
     capacity_ = std::exchange(other.capacity_, 0U);
     size_ = std::exchange(other.size_, 0U);
     last_logical_time_ = std::exchange(other.last_logical_time_, 0U);
+    writer_poisoned_ = std::exchange(other.writer_poisoned_, false);
   }
   return *this;
 }
@@ -266,29 +359,33 @@ MmapJournal::~MmapJournal() {
   static_cast<void>(close());
 }
 
-std::expected<MmapJournal, JournalError> MmapJournal::create(const std::filesystem::path& path,
-                                                             std::uint64_t capacity) noexcept {
+std::expected<MmapJournal, JournalOpenFailure>
+MmapJournal::create(const std::filesystem::path& path, std::uint64_t capacity) noexcept {
   std::size_t file_size{};
   if (capacity == 0U || capacity > kMaximumJournalCapacity) {
-    return std::unexpected{JournalError::invalid_capacity};
+    return std::unexpected{JournalOpenFailure{.operation = JournalError::invalid_capacity}};
   }
   if (!checked_file_size(capacity, file_size)) {
-    return std::unexpected{JournalError::file_size_overflow};
+    return std::unexpected{JournalOpenFailure{.operation = JournalError::file_size_overflow}};
   }
   const int descriptor = ::open(path.c_str(), open_flags(true), 0600);
   if (descriptor < 0) {
-    return std::unexpected{errno_error(errno)};
+    return std::unexpected{JournalOpenFailure{.operation = errno_error(errno)}};
   }
-  auto fail = [&](JournalError error) {
-    static_cast<void>(::close(descriptor));
-    static_cast<void>(::unlink(path.c_str()));
-    return std::expected<MmapJournal, JournalError>{std::unexpected{error}};
+  auto fail = [&](JournalError error, std::byte* mapping = nullptr) {
+    return std::expected<MmapJournal, JournalOpenFailure>{
+        std::unexpected{cleanup_after_open_failure(error, descriptor, mapping, file_size, &path)}};
   };
+  const JournalError lock = acquire_ownership_lock(descriptor);
+  if (lock != JournalError::none) {
+    return fail(lock);
+  }
   if (::fchmod(descriptor, 0600) != 0) {
     return fail(errno_error(errno));
   }
-  if (validate_regular_file(descriptor) != JournalError::none) {
-    return fail(JournalError::not_regular_file);
+  const JournalError regular = validate_regular_file(descriptor);
+  if (regular != JournalError::none) {
+    return fail(regular);
   }
   if (::ftruncate(descriptor, static_cast<off_t>(file_size)) != 0) {
     return fail(errno_error(errno));
@@ -310,33 +407,43 @@ std::expected<MmapJournal, JournalError> MmapJournal::create(const std::filesyst
   write_u32(header, 12U, static_cast<std::uint32_t>(kJournalHeaderSize));
   write_u32(header, 16U, static_cast<std::uint32_t>(kJournalRecordSize));
   write_u64(header, 20U, capacity);
-  if (::msync(mapping, file_size, MS_SYNC) != 0 || ::fsync(descriptor) != 0) {
-    static_cast<void>(::munmap(mapping, file_size));
-    return fail(JournalError::io_error);
+  const bool mapping_sync_failed = sync_mapping(mapping, file_size
+#if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
+                                                ,
+                                                journal_testing::SyncPoint::create_header
+#endif
+                                                ) != 0;
+  const bool file_sync_failed = ::fsync(descriptor) != 0;
+  if (mapping_sync_failed || file_sync_failed) {
+    return fail(JournalError::io_error, mapping);
   }
   return MmapJournal{descriptor, mapping, file_size, capacity};
 }
 
-std::expected<MmapJournal, JournalError>
+std::expected<MmapJournal, JournalOpenFailure>
 MmapJournal::open(const std::filesystem::path& path) noexcept {
   struct stat path_status{};
   if (::lstat(path.c_str(), &path_status) != 0) {
-    return std::unexpected{errno_error(errno)};
+    return std::unexpected{JournalOpenFailure{.operation = errno_error(errno)}};
   }
   if (S_ISLNK(path_status.st_mode)) {
-    return std::unexpected{JournalError::symlink};
+    return std::unexpected{JournalOpenFailure{.operation = JournalError::symlink}};
   }
   if (!S_ISREG(path_status.st_mode)) {
-    return std::unexpected{JournalError::not_regular_file};
+    return std::unexpected{JournalOpenFailure{.operation = JournalError::not_regular_file}};
   }
   const int descriptor = ::open(path.c_str(), open_flags(false));
   if (descriptor < 0) {
-    return std::unexpected{errno_error(errno)};
+    return std::unexpected{JournalOpenFailure{.operation = errno_error(errno)}};
   }
-  auto fail = [&](JournalError error) {
-    static_cast<void>(::close(descriptor));
-    return std::expected<MmapJournal, JournalError>{std::unexpected{error}};
+  auto fail = [&](JournalError error, std::byte* mapping = nullptr, std::size_t mapping_size = 0U) {
+    return std::expected<MmapJournal, JournalOpenFailure>{std::unexpected{
+        cleanup_after_open_failure(error, descriptor, mapping, mapping_size, nullptr)}};
   };
+  const JournalError lock = acquire_ownership_lock(descriptor);
+  if (lock != JournalError::none) {
+    return fail(lock);
+  }
   const JournalError regular = validate_regular_file(descriptor);
   if (regular != JournalError::none) {
     return fail(regular);
@@ -376,8 +483,12 @@ MmapJournal::open(const std::filesystem::path& path) noexcept {
   MmapJournal journal{descriptor, static_cast<std::byte*>(raw_mapping), file_size, capacity};
   const JournalError recovery = journal.recover();
   if (recovery != JournalError::none) {
-    static_cast<void>(journal.close());
-    return std::unexpected{recovery};
+    const JournalOpenFailure failure =
+        cleanup_after_open_failure(recovery, descriptor, journal.mapping_, file_size, nullptr);
+    journal.descriptor_ = -1;
+    journal.mapping_ = nullptr;
+    journal.mapping_size_ = 0U;
+    return std::unexpected{failure};
   }
   return journal;
 }
@@ -387,8 +498,12 @@ JournalError MmapJournal::recover() noexcept {
   last_logical_time_ = 0U;
   for (std::uint64_t index = 0U; index < capacity_; ++index) {
     const auto record = record_span(mapping_, index);
-    if (read_u32(record, static_cast<std::size_t>(kRecordCommitOffset)) != kCommittedMarker) {
+    const std::uint32_t marker = read_u32(record, static_cast<std::size_t>(kRecordCommitOffset));
+    if (marker == 0U) {
       return JournalError::none;
+    }
+    if (marker != kCommittedMarker) {
+      return JournalError::corrupt_record;
     }
     const auto decoded = decode_record(record);
     if (!decoded.has_value() || decoded->sequence.value() != index + 1U ||
@@ -404,6 +519,9 @@ JournalError MmapJournal::recover() noexcept {
 JournalError MmapJournal::append(const SequencedCommand& command) noexcept {
   if (mapping_ == nullptr || descriptor_ < 0) {
     return JournalError::closed;
+  }
+  if (writer_poisoned_) {
+    return JournalError::writer_poisoned;
   }
   if (size_ == capacity_) {
     return JournalError::full;
@@ -435,16 +553,29 @@ JournalError MmapJournal::append(const SequencedCommand& command) noexcept {
       static_cast<std::size_t>(kRecordSequenceOffset),
       static_cast<std::size_t>(kRecordCrcOffset - kRecordSequenceOffset));
   write_u32(record, static_cast<std::size_t>(kRecordCrcOffset), crc32c(protected_bytes));
-  if (::msync(mapping_, mapping_size_, MS_SYNC) != 0 || ::fsync(descriptor_) != 0) {
+  const bool data_mapping_sync_failed = sync_mapping(mapping_, mapping_size_
+#if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
+                                                     ,
+                                                     journal_testing::SyncPoint::append_pre_publish
+#endif
+                                                     ) != 0;
+  const bool data_file_sync_failed = ::fsync(descriptor_) != 0;
+  if (data_mapping_sync_failed || data_file_sync_failed) {
     return JournalError::io_error;
   }
 
   write_u32(record, static_cast<std::size_t>(kRecordCommitOffset), kCommittedMarker);
-  if (::msync(mapping_, mapping_size_, MS_SYNC) != 0 || ::fsync(descriptor_) != 0) {
-    write_u32(record, static_cast<std::size_t>(kRecordCommitOffset), 0U);
-    static_cast<void>(::msync(mapping_, mapping_size_, MS_SYNC));
-    static_cast<void>(::fsync(descriptor_));
-    return JournalError::io_error;
+  const bool commit_mapping_sync_failed =
+      sync_mapping(mapping_, mapping_size_
+#if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
+                   ,
+                   journal_testing::SyncPoint::append_post_publish
+#endif
+                   ) != 0;
+  const bool commit_file_sync_failed = ::fsync(descriptor_) != 0;
+  if (commit_mapping_sync_failed || commit_file_sync_failed) {
+    writer_poisoned_ = true;
+    return JournalError::commit_indeterminate;
   }
   ++size_;
   last_logical_time_ = command.logical_time;
