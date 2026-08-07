@@ -13,6 +13,22 @@ inline constexpr std::uint32_t kInvalidIndex = std::numeric_limits<std::uint32_t
 inline constexpr std::uint32_t kOrderLevelMask = 0x7fff'ffffU;
 inline constexpr std::uint32_t kOrderSideMask = 0x8000'0000U;
 
+namespace detail {
+
+[[nodiscard]] constexpr std::uint32_t encode_level_side(std::uint32_t level, Side side) noexcept {
+  return level | (side == Side::sell ? kOrderSideMask : 0U);
+}
+
+[[nodiscard]] constexpr std::uint32_t decode_level(std::uint32_t encoded) noexcept {
+  return encoded & kOrderLevelMask;
+}
+
+[[nodiscard]] constexpr Side decode_side(std::uint32_t encoded) noexcept {
+  return (encoded & kOrderSideMask) == 0U ? Side::buy : Side::sell;
+}
+
+} // namespace detail
+
 struct Order {
   OrderId id;
   Quantity remaining;

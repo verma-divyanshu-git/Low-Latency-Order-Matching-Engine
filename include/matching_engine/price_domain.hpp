@@ -34,6 +34,10 @@ public:
     return Price{minimum_.ticks() + static_cast<std::int64_t>(index)};
   }
 
+  [[nodiscard]] std::uint32_t tick_count() const noexcept {
+    return tick_count_;
+  }
+
 private:
   [[nodiscard]] static Price checked_maximum(Price minimum, std::uint32_t tick_count) {
     if (tick_count == 0U) {

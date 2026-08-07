@@ -11,3 +11,4 @@ A new record supersedes a decision when the architecture changes.
 - [ADR-0002: Measurement contract](0002-measurement-contract.md)
 - [ADR-0003: Generation handles and fixed-capacity order storage](0003-generation-handles-and-fixed-capacity-order-storage.md)
 - [ADR-0004: Bounded price domain and hierarchical occupancy bitmap](0004-bounded-price-domain-and-hierarchical-bitmap.md)
+- [ADR-0005: Single-writer matching and fixed caller-owned output](0005-single-writer-matching-and-fixed-output.md)

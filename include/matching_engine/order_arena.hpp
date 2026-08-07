@@ -11,6 +11,8 @@
 
 namespace matching_engine {
 
+class OrderBook;
+
 namespace detail {
 
 [[nodiscard]] constexpr std::uint32_t next_generation(std::uint32_t generation) noexcept {
@@ -94,6 +96,8 @@ public:
   }
 
 private:
+  friend class OrderBook;
+
   struct Slot {
     Order order{
         .id = OrderId{0U},
@@ -118,6 +122,18 @@ private:
   [[nodiscard]] bool is_live_handle(Handle handle) const noexcept {
     return handle.generation != 0U && handle.index < capacity_ && slots_[handle.index].live &&
            slots_[handle.index].generation == handle.generation;
+  }
+
+  [[nodiscard]] Order& order_at(std::uint32_t index) noexcept {
+    return slots_[index].order;
+  }
+
+  [[nodiscard]] Handle handle_at(std::uint32_t index) const noexcept {
+    return {.index = index, .generation = slots_[index].generation};
+  }
+
+  void release_index(std::uint32_t index) noexcept {
+    static_cast<void>(release(handle_at(index)));
   }
 
   std::uint32_t capacity_;

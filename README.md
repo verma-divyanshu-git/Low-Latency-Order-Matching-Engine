@@ -9,7 +9,8 @@ The thesis is that predictable ownership, bounded work, explicit sequencing, and
 Phase 1 now includes strong price, quantity, identifier, sequence, side, and handle domain types.
 It also includes a fixed-capacity order arena with generation-checked handles and separate hot-order and arena metadata storage.
 Prices can be mapped into a validated bounded tick domain, and a fixed hierarchical bitmap tracks populated level indexes.
-Order matching, price-level storage, sequencing, and external interfaces are not implemented yet.
+A single-writer, fixed-capacity order book now matches limit and market orders with price-time priority, maker-price executions, caller-owned trade output, and no allocation after construction.
+External cancellation, gateway sequencing, and process-boundary interfaces are not implemented yet.
 No latency or throughput claims should be inferred from this repository.
 
 ## Planned architecture
@@ -84,6 +85,10 @@ Future benchmark reports will:
 
 - This is not production-ready trading software.
 - Persistence, recovery, networking, risk checks, authentication, authorization, administration, and operational monitoring are not implemented.
+- Duplicate order identifiers are not detected by the matching core and must be rejected by a future gateway.
+- Each order book requires exclusive access by one matching thread; concurrent calls are unsupported.
+- Price and order capacities are fixed at construction, and callers must provide `max_orders` trade slots for every submission.
+- Market-order residual is cancelled, and cancellation or replacement of resting orders is not implemented yet.
 - Exchange-specific order types and market rules are not defined.
 - Distributed consensus and cross-process deterministic replay are not Phase 0 goals.
 - Kernel bypass, FPGA integration, and custom hardware are not current goals.

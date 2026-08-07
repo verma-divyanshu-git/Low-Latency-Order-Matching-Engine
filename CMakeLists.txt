@@ -10,15 +10,13 @@ include(CTest)
 include(cmake/ProjectOptions.cmake)
 engine_validate_options()
 
-# The core remains header-only, so consumers compile its typed API without a
-# placeholder translation unit.
-add_library(matching_engine_core INTERFACE)
+add_library(matching_engine_core STATIC src/order_book.cpp)
 add_library(matching_engine::core ALIAS matching_engine_core)
-target_compile_features(matching_engine_core INTERFACE cxx_std_23)
 target_include_directories(
   matching_engine_core
-  INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-            $<INSTALL_INTERFACE:include>)
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+         $<INSTALL_INTERFACE:include>)
+engine_configure_target(matching_engine_core)
 
 if(PROJECT_IS_TOP_LEVEL)
   set(ENGINE_BUILD_TESTS_DEFAULT ON)
@@ -36,7 +34,7 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
     GIT_SHALLOW FALSE)
   FetchContent_MakeAvailable(googletest)
 
-  add_executable(matching_engine_core_tests tests/order_arena_test.cpp
+  add_executable(matching_engine_core_tests tests/order_arena_test.cpp tests/order_book_test.cpp
                                             tests/price_domain_bitmap_test.cpp)
   target_link_libraries(matching_engine_core_tests PRIVATE matching_engine::core GTest::gtest_main)
   engine_configure_target(matching_engine_core_tests)

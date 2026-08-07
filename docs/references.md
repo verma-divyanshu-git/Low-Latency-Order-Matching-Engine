@@ -25,6 +25,11 @@ These primary and project-authoritative sources inform the Phase 0 foundation an
 - [C++ memory model](https://eel.is/c++draft/intro.races)
 - [gRPC core concepts](https://grpc.io/docs/what-is-grpc/core-concepts/)
 
+## Matching rules and protocols
+
+- [Nasdaq Equity 4 Rule 4757, Book Processing](https://listingcenter.nasdaq.com/rulebook/nasdaq/rules/Nasdaq%20Equity%204)
+- [Nasdaq OUCH 5.0 specification](https://www.nasdaqtrader.com/content/technicalsupport/specifications/TradingProducts/OUCH5.0.pdf)
+
 ## Measurement
 
 - [Google Benchmark user guide](https://google.github.io/benchmark/user_guide.html)
