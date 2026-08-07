@@ -56,6 +56,9 @@
       "name": "fuzz",
       "displayName": "Clang libFuzzer and AddressSanitizer",
       "inherits": "debug",
+      "environment": {
+        "PATH": "/opt/homebrew/opt/llvm/bin:$penv{PATH}"
+      },
       "cacheVariables": {
         "CMAKE_CXX_COMPILER": "clang++",
         "ENGINE_ENABLE_FUZZING": "ON"

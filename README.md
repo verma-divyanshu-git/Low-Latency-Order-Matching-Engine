@@ -57,7 +57,10 @@ ctest --preset debug
 
 Use `release` in place of `debug` for an optimized build.
 The `asan`, `ubsan`, and `tsan` presets enable one sanitizer at a time.
-The `fuzz` preset selects Clang and combines libFuzzer with AddressSanitizer, which is the supported fuzzing configuration.
+The `fuzz` preset requires an upstream Clang distribution with working libFuzzer and AddressSanitizer runtimes.
+On Apple silicon, the preset checks `/opt/homebrew/opt/llvm/bin` before the inherited `PATH` so a Homebrew LLVM installation is selected.
+Configuration compiles and links a fuzz harness probe and fails with a precise error when the required runtimes are unavailable.
+Under this preset, `engine_configure_target()` uses `fuzzer-no-link`, while an executable fuzz harness must use `engine_configure_fuzz_target()` to link the libFuzzer runtime.
 
 ## Benchmark contract
 

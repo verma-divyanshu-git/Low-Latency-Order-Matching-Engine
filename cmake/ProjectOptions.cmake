@@ -1,5 +1,7 @@
 include_guard(GLOBAL)
 
+include(CheckCXXSourceCompiles)
+
 option(ENGINE_ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(ENGINE_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(ENGINE_ENABLE_TSAN "Enable ThreadSanitizer" OFF)
@@ -18,11 +20,46 @@ function(engine_validate_options)
   if(ENGINE_ENABLE_FUZZING AND sanitizer_count GREATER 0)
     message(FATAL_ERROR "Fuzzing already supplies its supported ASan combination")
   endif()
-  if((ENGINE_ENABLE_ASAN OR ENGINE_ENABLE_UBSAN OR ENGINE_ENABLE_TSAN) AND MSVC)
-    message(FATAL_ERROR "Sanitizer presets require GCC or Clang")
+  if((sanitizer_count GREATER 0 OR ENGINE_ENABLE_FUZZING)
+     AND NOT CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
+    message(
+      FATAL_ERROR
+        "Sanitizer presets do not support compiler '${CMAKE_CXX_COMPILER_ID}'; use GCC or Clang"
+    )
   endif()
   if(ENGINE_ENABLE_FUZZING AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    message(FATAL_ERROR "The fuzz preset requires Clang and libFuzzer")
+    message(FATAL_ERROR "The fuzz preset requires Clang with libFuzzer")
+  endif()
+  if(ENGINE_ENABLE_FUZZING)
+    set(CMAKE_REQUIRED_FLAGS
+        "-fsanitize=fuzzer-no-link,address -fno-omit-frame-pointer")
+    set(CMAKE_REQUIRED_LINK_OPTIONS -fsanitize=address)
+    check_cxx_source_compiles(
+      "int main() { return 0; }" ENGINE_HAS_WORKING_FUZZER_NO_LINK)
+    if(NOT ENGINE_HAS_WORKING_FUZZER_NO_LINK)
+      message(
+        FATAL_ERROR
+          "The fuzz preset requires Clang with working fuzzer-no-link and AddressSanitizer support; '${CMAKE_CXX_COMPILER}' could not compile and link an instrumented executable"
+      )
+    endif()
+
+    set(CMAKE_REQUIRED_LINK_OPTIONS -fsanitize=address -fsanitize=fuzzer)
+    check_cxx_source_compiles(
+      [=[
+        #include <cstddef>
+        #include <cstdint>
+
+        extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t*, std::size_t) {
+          return 0;
+        }
+      ]=]
+      ENGINE_HAS_WORKING_LIBFUZZER)
+    if(NOT ENGINE_HAS_WORKING_LIBFUZZER)
+      message(
+        FATAL_ERROR
+          "The fuzz preset requires Clang with working libFuzzer and AddressSanitizer runtimes; '${CMAKE_CXX_COMPILER}' could not compile and link a fuzz harness"
+      )
+    endif()
   endif()
 endfunction()
 
@@ -65,8 +102,24 @@ function(engine_configure_target target)
   endif()
 
   if(ENGINE_ENABLE_FUZZING)
-    target_compile_options("${target}" PRIVATE -fsanitize=fuzzer,address
+    target_compile_options("${target}" PRIVATE -fsanitize=fuzzer-no-link,address
                                                 -fno-omit-frame-pointer)
-    target_link_options("${target}" PRIVATE -fsanitize=fuzzer,address)
+    target_link_options("${target}" PRIVATE -fsanitize=address)
   endif()
+endfunction()
+
+function(engine_configure_fuzz_target target)
+  if(NOT TARGET "${target}")
+    message(FATAL_ERROR "engine_configure_fuzz_target requires an existing target")
+  endif()
+  if(NOT ENGINE_ENABLE_FUZZING)
+    message(FATAL_ERROR "engine_configure_fuzz_target requires the fuzz preset")
+  endif()
+  get_target_property(target_type "${target}" TYPE)
+  if(NOT target_type STREQUAL "EXECUTABLE")
+    message(FATAL_ERROR "A fuzz harness target must be an executable")
+  endif()
+
+  engine_configure_target("${target}")
+  target_link_options("${target}" PRIVATE -fsanitize=fuzzer)
 endfunction()
