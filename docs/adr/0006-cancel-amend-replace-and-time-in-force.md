@@ -12,7 +12,7 @@ Replacement must never remove a live order before every rejectable input has bee
 
 Resting orders are addressed by generation-checked handles.
 Cancellation unlinks any FIFO position and releases its arena slot.
-An equal or smaller remaining quantity is amended in place and keeps its handle and queue position.
+An equal or smaller positive remaining quantity is amended in place and keeps its handle and queue position.
 Any replacement cancels the original and submits a new GTC order with the same identifier and side, so even a same-price replacement receives a new generation and joins the queue tail.
 These priority choices follow the distinction in [SR-NASDAQ-2022-020](https://listingcenter.nasdaq.com/assets/rulebook/nasdaq/filings/SR-NASDAQ-2022-020.pdf) between size reductions that retain priority and changes that do not, together with the replace-order behavior described by [Nasdaq OUCH 5.0](https://www.nasdaqtrader.com/content/technicalsupport/specifications/TradingProducts/OUCH5.0.pdf).
 
