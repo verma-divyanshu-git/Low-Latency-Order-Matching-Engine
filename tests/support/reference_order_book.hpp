@@ -37,6 +37,7 @@ struct ModelAmendResult {
   OrderId order_id{0U};
   Quantity previous_quantity{0U};
   Quantity new_quantity{0U};
+  ModelToken token{};
 };
 
 class ReferenceOrderBook {
@@ -111,20 +112,22 @@ public:
   [[nodiscard]] ModelAmendResult amend_quantity(ModelToken token, Quantity new_remaining) {
     const auto location = locate(token);
     if (!location.has_value()) {
-      return {AmendReason::invalid_handle, OrderId{0U}, Quantity{0U}, new_remaining};
+      return {AmendReason::invalid_handle, OrderId{0U}, Quantity{0U}, new_remaining,
+              ModelToken{0U}};
     }
     const Quantity previous = location->order->remaining;
     if (new_remaining.value() == 0U) {
-      return {AmendReason::zero_quantity, location->order->id, previous, new_remaining};
+      return {AmendReason::zero_quantity, location->order->id, previous, new_remaining, token};
     }
     if (new_remaining.value() > max_order_quantity_) {
-      return {AmendReason::quantity_too_large, location->order->id, previous, new_remaining};
+      return {AmendReason::quantity_too_large, location->order->id, previous, new_remaining, token};
     }
     if (new_remaining > previous) {
-      return {AmendReason::increase_not_allowed, location->order->id, previous, new_remaining};
+      return {AmendReason::increase_not_allowed, location->order->id, previous, new_remaining,
+              token};
     }
     location->order->remaining = new_remaining;
-    return {AmendReason::none, location->order->id, previous, new_remaining};
+    return {AmendReason::none, location->order->id, previous, new_remaining, token};
   }
 
   [[nodiscard]] ModelSubmitResult replace(ModelToken token, Price new_price, Quantity new_quantity,

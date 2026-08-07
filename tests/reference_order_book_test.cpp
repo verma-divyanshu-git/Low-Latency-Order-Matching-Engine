@@ -35,7 +35,18 @@ TEST(ReferenceOrderBookTest, ModelsCancelAmendReplaceAndCapacityRejections) {
   EXPECT_EQ(book.submit_limit(OrderId{2}, Side::buy, Price{39}, Quantity{1}, TimeInForce::gtc, 1U)
                 .reject_reason,
             RejectReason::order_capacity_exhausted);
-  EXPECT_EQ(book.amend_quantity(initial_token, Quantity{3}).reject_reason, AmendReason::none);
+  const ModelAmendResult amended = book.amend_quantity(initial_token, Quantity{3});
+  EXPECT_EQ(amended.reject_reason, AmendReason::none);
+  EXPECT_EQ(amended.token, initial_token);
+  const ModelAmendResult equal = book.amend_quantity(initial_token, Quantity{3});
+  EXPECT_EQ(equal.reject_reason, AmendReason::none);
+  EXPECT_EQ(equal.token, initial_token);
+  const ModelAmendResult rejected = book.amend_quantity(initial_token, Quantity{0});
+  EXPECT_EQ(rejected.reject_reason, AmendReason::zero_quantity);
+  EXPECT_EQ(rejected.token, initial_token);
+  const ModelAmendResult invalid = book.amend_quantity(ModelToken{0U}, Quantity{3});
+  EXPECT_EQ(invalid.reject_reason, AmendReason::invalid_handle);
+  EXPECT_EQ(invalid.token, ModelToken{0U});
   const ModelSubmitResult replacement = book.replace(initial_token, Price{41}, Quantity{4}, 1U);
   ASSERT_EQ(replacement.reject_reason, RejectReason::none);
   ASSERT_TRUE(replacement.resting_token.has_value());

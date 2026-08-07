@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <gtest/gtest.h>
@@ -12,9 +13,36 @@
 #include <optional>
 #include <ostream>
 #include <span>
+#include <string_view>
 #include <vector>
 
 namespace matching_engine::test {
+
+[[nodiscard]] inline std::optional<std::uint64_t> parse_replay_seed(std::string_view text) {
+  if (text.empty()) {
+    return std::nullopt;
+  }
+  std::uint64_t seed = 0U;
+  const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), seed, 10);
+  if (error != std::errc{} || end != text.data() + text.size()) {
+    return std::nullopt;
+  }
+  return seed;
+}
+
+[[nodiscard]] constexpr std::optional<std::uint64_t> checked_add(std::uint64_t left,
+                                                                 std::uint64_t right) {
+  if (left > std::numeric_limits<std::uint64_t>::max() - right) {
+    return std::nullopt;
+  }
+  return left + right;
+}
+
+[[nodiscard]] constexpr std::optional<std::uint64_t> checked_double(std::uint64_t value) {
+  return value > std::numeric_limits<std::uint64_t>::max() / 2U
+             ? std::nullopt
+             : std::optional<std::uint64_t>{value * 2U};
+}
 
 enum class CommandKind : std::uint8_t {
   limit,
@@ -105,9 +133,9 @@ public:
                    << " ./build/debug/matching_engine_core_tests --gtest_filter=" << replay_filter()
                    << " scenario=" << scenario_.name << " seed=" << seed << " step=" << step
                    << " command={" << command << '}');
-      execute(command, engine, model, trade_buffer, tracked, ledger);
+      execute(command, engine, model, trade_buffer, tracked, ledger, seed, step);
       compare_state(engine, model, tracked);
-      EXPECT_TRUE(ledger.conserved(model.resting_quantity()));
+      ledger.expect_conserved(model.resting_quantity(), seed, step);
     }
   }
 
@@ -134,12 +162,59 @@ private:
   };
 
   struct Ledger {
-    unsigned __int128 accepted{};
-    unsigned __int128 traded{};
-    unsigned __int128 canceled{};
+    std::uint64_t accepted{};
+    std::uint64_t traded{};
+    std::uint64_t canceled{};
 
-    [[nodiscard]] bool conserved(std::uint64_t resting) const {
-      return accepted == (traded * 2U) + canceled + resting;
+    void add_accepted(std::uint64_t quantity, std::uint64_t seed, std::uint32_t step) {
+      accumulate(accepted, quantity, "accepted submitted", seed, step);
+    }
+
+    void add_traded(std::uint64_t quantity, std::uint64_t seed, std::uint32_t step) {
+      accumulate(traded, quantity, "traded", seed, step);
+    }
+
+    void add_canceled(std::uint64_t quantity, std::uint64_t seed, std::uint32_t step) {
+      accumulate(canceled, quantity, "canceled/unfilled", seed, step);
+    }
+
+    void expect_conserved(std::uint64_t resting, std::uint64_t seed, std::uint32_t step) const {
+      const auto doubled = checked_double(traded);
+      if (!doubled.has_value()) {
+        ADD_FAILURE() << "conservation arithmetic overflow: accepted_submitted=" << accepted
+                      << " traded_quantity=" << traded << " doubled_traded_contribution=overflow"
+                      << " canceled_unfilled=" << canceled << " resting=" << resting
+                      << " expected_rhs=overflow seed=" << seed << " step=" << step;
+        return;
+      }
+      const auto canceled_total = checked_add(*doubled, canceled);
+      const auto expected =
+          canceled_total.has_value() ? checked_add(*canceled_total, resting) : std::nullopt;
+      if (!expected.has_value()) {
+        ADD_FAILURE() << "conservation arithmetic overflow: accepted_submitted=" << accepted
+                      << " traded_quantity=" << traded
+                      << " doubled_traded_contribution=" << *doubled
+                      << " canceled_unfilled=" << canceled << " resting=" << resting
+                      << " expected_rhs=overflow seed=" << seed << " step=" << step;
+        return;
+      }
+      EXPECT_EQ(accepted, *expected)
+          << "accepted_submitted=" << accepted << " traded_quantity=" << traded
+          << " doubled_traded_contribution=" << *doubled << " canceled_unfilled=" << canceled
+          << " resting=" << resting << " expected_rhs=" << *expected << " seed=" << seed
+          << " step=" << step;
+    }
+
+  private:
+    static void accumulate(std::uint64_t& total, std::uint64_t quantity, const char* term,
+                           std::uint64_t seed, std::uint32_t step) {
+      const auto sum = checked_add(total, quantity);
+      if (!sum.has_value()) {
+        ADD_FAILURE() << "ledger overflow: term=" << term << " current=" << total
+                      << " increment=" << quantity << " seed=" << seed << " step=" << step;
+        return;
+      }
+      total = *sum;
     }
   };
 
@@ -224,17 +299,17 @@ private:
     }
   }
 
-  static void record_submit(const Command& command, const ModelSubmitResult& result,
-                            Ledger& ledger) {
+  static void record_submit(const Command& command, const ModelSubmitResult& result, Ledger& ledger,
+                            std::uint64_t seed, std::uint32_t step) {
     if (result.reject_reason != RejectReason::none) {
       return;
     }
-    ledger.accepted += command.quantity.value();
+    ledger.add_accepted(command.quantity.value(), seed, step);
     for (const Trade& trade : result.trades) {
-      ledger.traded += trade.quantity.value();
+      ledger.add_traded(trade.quantity.value(), seed, step);
     }
     if (!result.resting_token.has_value()) {
-      ledger.canceled += result.unfilled_quantity.value();
+      ledger.add_canceled(result.unfilled_quantity.value(), seed, step);
     }
   }
 
@@ -252,7 +327,7 @@ private:
 
   static void execute(const Command& command, OrderBook& engine, ReferenceOrderBook& model,
                       std::vector<Trade>& trade_buffer, std::vector<TrackedOrder>& tracked,
-                      Ledger& ledger) {
+                      Ledger& ledger, std::uint64_t seed, std::uint32_t step) {
     const std::size_t trade_capacity =
         command.full_output ? trade_buffer.size() : trade_buffer.size() - 1U;
     const std::span<Trade> trades = output_span(command, trade_buffer);
@@ -264,7 +339,7 @@ private:
           model.submit_limit(command.id, command.side, command.price, command.quantity,
                              command.time_in_force, trade_capacity);
       compare_submit(engine_result, model_result, trade_buffer);
-      record_submit(command, model_result, ledger);
+      record_submit(command, model_result, ledger, seed, step);
       track_resting(engine_result, model_result, tracked);
       return;
     }
@@ -274,7 +349,7 @@ private:
       const ModelSubmitResult model_result =
           model.submit_market(command.id, command.side, command.quantity, trade_capacity);
       compare_submit(engine_result, model_result, trade_buffer);
-      record_submit(command, model_result, ledger);
+      record_submit(command, model_result, ledger, seed, step);
       return;
     }
     case CommandKind::cancel: {
@@ -285,7 +360,7 @@ private:
       EXPECT_EQ(engine_result.order_id, model_result.order_id);
       EXPECT_EQ(engine_result.canceled_quantity, model_result.canceled_quantity);
       if (model_result.reject_reason == CancelReason::none) {
-        ledger.canceled += model_result.canceled_quantity.value();
+        ledger.add_canceled(model_result.canceled_quantity.value(), seed, step);
       }
       return;
     }
@@ -297,9 +372,15 @@ private:
       EXPECT_EQ(engine_result.order_id, model_result.order_id);
       EXPECT_EQ(engine_result.previous_quantity, model_result.previous_quantity);
       EXPECT_EQ(engine_result.new_quantity, model_result.new_quantity);
+      EXPECT_EQ(engine_result.handle, engine_handle);
+      EXPECT_EQ(model_result.token, model_token);
+      if (model_result.reject_reason == AmendReason::invalid_handle) {
+        EXPECT_EQ(engine_result.handle, kInvalidHandle);
+        EXPECT_EQ(model_result.token, ModelToken{0U});
+      }
       if (model_result.reject_reason == AmendReason::none) {
-        ledger.canceled +=
-            model_result.previous_quantity.value() - model_result.new_quantity.value();
+        ledger.add_canceled(
+            model_result.previous_quantity.value() - model_result.new_quantity.value(), seed, step);
       }
       return;
     }
@@ -313,8 +394,8 @@ private:
       compare_submit(engine_result, model_result, trade_buffer);
       if (model_result.reject_reason == RejectReason::none) {
         ASSERT_TRUE(old_info.has_value());
-        ledger.canceled += old_info->remaining.value();
-        record_submit(command, model_result, ledger);
+        ledger.add_canceled(old_info->remaining.value(), seed, step);
+        record_submit(command, model_result, ledger, seed, step);
       }
       track_resting(engine_result, model_result, tracked);
       return;

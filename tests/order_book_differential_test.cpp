@@ -1,28 +1,31 @@
 #include "support/differential_simulator.hpp"
 
 #include <array>
-#include <charconv>
 #include <cstdlib>
 #include <gtest/gtest.h>
+#include <limits>
 #include <optional>
-#include <string_view>
 
 namespace matching_engine::test {
 namespace {
 
-[[nodiscard]] std::optional<std::uint64_t> replay_seed() {
-  // Test discovery and execution are single-threaded when this immutable process setting is read.
-  const char* const value = std::getenv("ORDER_BOOK_DIFF_SEED"); // NOLINT(concurrency-mt-unsafe)
-  if (value == nullptr) {
-    return std::nullopt;
-  }
-  std::uint64_t seed = 0U;
-  const std::string_view text{value};
-  const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), seed, 10);
-  if (error != std::errc{} || end != text.data() + text.size()) {
-    return std::nullopt;
-  }
-  return seed;
+TEST(DifferentialSimulatorSupportTest, ParsesOnlyCompleteUnsignedDecimalSeeds) {
+  EXPECT_EQ(parse_replay_seed("0"), 0U);
+  EXPECT_EQ(parse_replay_seed("18446744073709551615"), std::numeric_limits<std::uint64_t>::max());
+  EXPECT_EQ(parse_replay_seed(""), std::nullopt);
+  EXPECT_EQ(parse_replay_seed("-1"), std::nullopt);
+  EXPECT_EQ(parse_replay_seed("+1"), std::nullopt);
+  EXPECT_EQ(parse_replay_seed("12x"), std::nullopt);
+  EXPECT_EQ(parse_replay_seed(" 12"), std::nullopt);
+  EXPECT_EQ(parse_replay_seed("18446744073709551616"), std::nullopt);
+}
+
+TEST(DifferentialSimulatorSupportTest, CheckedArithmeticRejectsUint64Overflow) {
+  constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
+  EXPECT_EQ(checked_add(4U, 5U), 9U);
+  EXPECT_EQ(checked_add(maximum, 1U), std::nullopt);
+  EXPECT_EQ(checked_double(maximum / 2U), maximum - 1U);
+  EXPECT_EQ(checked_double((maximum / 2U) + 1U), std::nullopt);
 }
 
 TEST(OrderBookDifferentialTest, NormalSeedRegressionCorpusCoversTenThousandOperations) {
@@ -31,8 +34,13 @@ TEST(OrderBookDifferentialTest, NormalSeedRegressionCorpusCoversTenThousandOpera
       0x452821e638d01377ULL, 0xbe5466cf34e90c6cULL, 0xc0ac29b7c97c50ddULL, 0x3f84d5b5b5470917ULL,
       0x9216d5d98979fb1bULL, 0xd1310ba698dfb5acULL};
   const Scenario scenario = Scenario::normal();
-  if (const auto seed = replay_seed(); seed.has_value()) {
-    DifferentialSimulator{scenario}.run(*seed, 1000U);
+  // Test discovery and execution are single-threaded when this immutable process setting is read.
+  const char* const replay = std::getenv("ORDER_BOOK_DIFF_SEED"); // NOLINT(concurrency-mt-unsafe)
+  if (replay != nullptr) {
+    const auto seed = parse_replay_seed(replay);
+    ASSERT_TRUE(seed.has_value())
+        << "ORDER_BOOK_DIFF_SEED must be a complete unsigned decimal uint64 value";
+    DifferentialSimulator{scenario}.run(seed.value_or(0U), 1000U);
     return;
   }
   for (const std::uint64_t seed : seeds) {

@@ -15,7 +15,8 @@ The independent ledger checks:
 An accepted replacement cancels the old remainder and submits the replacement quantity.
 An accepted amend decrease contributes the removed quantity to cancellation.
 IOC and market residuals are canceled, while rejected FOK quantity is not accepted.
-Test arithmetic uses `unsigned __int128`.
+Test arithmetic uses portable checked `std::uint64_t` addition and doubling.
+Any arithmetic overflow fails the simulator with its seed and step instead of wrapping.
 
 The normal regression corpus contains these fixed 64-bit seeds and runs 1,000 commands per seed:
 
@@ -41,6 +42,9 @@ ORDER_BOOK_DIFF_SEED=2611923443488327891 \
   ./build/debug/matching_engine_core_tests \
   --gtest_filter=OrderBookDifferentialTest.NormalSeedRegressionCorpusCoversTenThousandOperations
 ```
+
+`ORDER_BOOK_DIFF_SEED` accepts only a complete unsigned decimal `uint64_t` value.
+Empty, signed, overflowing, whitespace-padded, malformed, and trailing-character values fail the test and never fall back to the default corpus.
 
 Differential agreement is strong evidence that two independent implementations satisfy the exercised state-machine semantics.
 It does not prove correctness outside the generated command domain, thread safety, gateway behavior, persistence, self-trade prevention, latency, or the absence of a shared misunderstanding in the specification.
