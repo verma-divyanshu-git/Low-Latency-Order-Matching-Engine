@@ -8,7 +8,8 @@ The thesis is that predictable ownership, bounded work, explicit sequencing, and
 
 Phase 1 now includes strong price, quantity, identifier, sequence, side, and handle domain types.
 It also includes a fixed-capacity order arena with generation-checked handles and separate hot-order and arena metadata storage.
-Order matching, price levels, sequencing, and external interfaces are not implemented yet.
+Prices can be mapped into a validated bounded tick domain, and a fixed hierarchical bitmap tracks populated level indexes.
+Order matching, price-level storage, sequencing, and external interfaces are not implemented yet.
 No latency or throughput claims should be inferred from this repository.
 
 ## Planned architecture
