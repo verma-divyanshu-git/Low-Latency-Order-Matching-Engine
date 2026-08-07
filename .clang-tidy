@@ -1,0 +1,14 @@
+---
+Checks: >
+  -*,
+  bugprone-*,
+  concurrency-*,
+  performance-*,
+  portability-*,
+  clang-analyzer-*,
+  -bugprone-easily-swappable-parameters
+HeaderFilterRegex: '^(include|src|tests|benchmarks)/'
+FormatStyle: file
+ExtraArgs:
+  - -std=c++23
+...

@@ -1,0 +1,93 @@
+# Low-Latency Order Matching Engine
+
+An open-source C++23 project for studying a small, deterministic, mechanically sympathetic order matching engine.
+
+The thesis is that predictable ownership, bounded work, explicit sequencing, and measurement discipline matter more on the hot path than a large framework stack.
+
+## Status
+
+Phase 0 provides only the build, analysis, documentation, and CI foundation.
+There is no engine implementation, public API, test target, benchmark target, or benchmark result yet.
+No latency or throughput claims should be inferred from this repository.
+
+## Planned architecture
+
+```mermaid
+flowchart LR
+  P1[Producer 1] --> L1[SPSC lane 1]
+  P2[Producer 2] --> L2[SPSC lane 2]
+  PN[Producer N] --> LN[SPSC lane N]
+  L1 --> M[Deterministic merge and sequencer]
+  L2 --> M
+  LN --> M
+  M --> E[Single-writer matching engine]
+  E --> O1[Execution reports]
+  E --> O2[Market-data events]
+  O1 --> C1[Consumer SPSC lane]
+  O2 --> C2[Consumer SPSC lane]
+```
+
+Each producer is planned to own one single-producer, single-consumer lane.
+A deterministic merge stage will assign the total order consumed by the single-writer matching core.
+This avoids presenting a multi-producer ring as if concurrent arrival order were inherently deterministic.
+
+## Design direction
+
+C++23 is the language baseline because this project targets explicit data layout, ownership, allocation, and compile-time constraints while using current standard-library facilities.
+The runtime engine is intended to remain dependency-free.
+Development-only dependencies must be justified by real code and introduced with the first target that needs them.
+The rationale is recorded in [ADR-0001](docs/adr/0001-cpp23-and-dependency-policy.md).
+
+The planned hot path will not use gRPC, dynamic serialization, network RPC, logging, or blocking I/O.
+Those tools can be appropriate at process boundaries and on control-plane paths, but their scheduling, allocation, framing, and serialization work conflicts with a deliberately small and measurable matching loop.
+Transport adapters may be considered later without becoming part of the matching core.
+
+Measurement rules are defined before publishing numbers in [ADR-0002](docs/adr/0002-measurement-contract.md).
+
+## Build
+
+The minimum supported CMake version is 3.22, and presets use Ninja.
+A compiler with the C++23 features required by future targets will be needed once implementation begins.
+
+```sh
+cmake --preset debug
+cmake --build --preset debug
+ctest --preset debug
+```
+
+Use `release` in place of `debug` for an optimized build.
+The `asan`, `ubsan`, and `tsan` presets enable one sanitizer at a time.
+The `fuzz` preset selects Clang and combines libFuzzer with AddressSanitizer, which is the supported fuzzing configuration.
+
+## Benchmark contract
+
+Future benchmark reports will:
+
+- Publish the exact commit, compiler, flags, hardware, operating system, CPU topology, and relevant firmware or power settings.
+- Separate throughput tests from latency tests.
+- Report latency distributions and tail percentiles instead of averages alone.
+- Include warm-up policy, sample count, run duration, queue depth, workload mix, and message distribution.
+- State whether allocation, parsing, transport, persistence, logging, and validation are inside or outside the measured interval.
+- Use monotonic timing, disclose clock source and calibration, and account for measurement overhead.
+- Pin threads and disclose isolation, affinity, frequency scaling, simultaneous multithreading, and NUMA policy where applicable.
+- Preserve raw data and scripts needed to reproduce published results.
+- Avoid comparisons unless competing systems are measured under an equivalent contract.
+
+## Limitations and non-goals
+
+- This is not production-ready trading software.
+- Persistence, recovery, networking, risk checks, authentication, authorization, administration, and operational monitoring are not implemented.
+- Exchange-specific order types and market rules are not defined.
+- Distributed consensus and cross-process deterministic replay are not Phase 0 goals.
+- Kernel bypass, FPGA integration, and custom hardware are not current goals.
+- The project will not trade correctness or determinism for an attractive benchmark number.
+
+## Project documentation
+
+- [Architecture decision records](docs/adr/README.md)
+- [Primary references](docs/references.md)
+- [Security policy](SECURITY.md)
+
+## License
+
+This project is available under the [MIT License](LICENSE).

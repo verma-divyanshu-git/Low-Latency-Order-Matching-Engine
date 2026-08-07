@@ -1,0 +1,11 @@
+/build/
+/out/
+
+.cache/
+.clangd/
+.DS_Store
+
+*.dSYM/
+*.profraw
+*.profdata
+compile_commands.json
