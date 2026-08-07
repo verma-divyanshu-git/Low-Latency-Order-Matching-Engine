@@ -6,8 +6,9 @@ The thesis is that predictable ownership, bounded work, explicit sequencing, and
 
 ## Status
 
-Phase 0 provides only the build, analysis, documentation, and CI foundation.
-There is no engine implementation, public API, test target, benchmark target, or benchmark result yet.
+Phase 1 now includes strong price, quantity, identifier, sequence, side, and handle domain types.
+It also includes a fixed-capacity order arena with generation-checked handles and separate hot-order and arena metadata storage.
+Order matching, price levels, sequencing, and external interfaces are not implemented yet.
 No latency or throughput claims should be inferred from this repository.
 
 ## Planned architecture
@@ -55,6 +56,8 @@ cmake --build --preset debug
 ctest --preset debug
 ```
 
+Tests use a pinned GoogleTest checkout and are enabled by default only when this repository is the top-level CMake project.
+Set `-DENGINE_BUILD_TESTS=OFF` to configure the dependency-free core without fetching or building tests.
 Use `release` in place of `debug` for an optimized build.
 The `asan`, `ubsan`, and `tsan` presets enable one sanitizer at a time.
 The `fuzz` preset requires an upstream Clang distribution with working libFuzzer and AddressSanitizer runtimes.
