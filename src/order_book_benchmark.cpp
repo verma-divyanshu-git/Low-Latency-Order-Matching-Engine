@@ -26,7 +26,10 @@ int main(int argc, char** argv) {
     std::cout << result->summary_path.string() << '\n';
     std::cerr << "claim_scope="
               << matching_engine::benchmark::claim_scope_name(result->summary.claim_scope)
-              << " reason=" << result->summary.publication_reason << '\n';
+              << " source=" << result->summary.source_qualification_reason
+              << " operation=" << result->summary.operation_resolution_reason
+              << " effective_granularity_ns=" << result->summary.effective_granularity_ns
+              << " planned_memory_bytes=" << result->summary.planned_memory_bytes << '\n';
     if (result->corrected_summary.has_value()) {
       std::cerr << "diagnostic raw and coordinated-omission-corrected histograms are separate; "
                    "neither is an engine claim\n";

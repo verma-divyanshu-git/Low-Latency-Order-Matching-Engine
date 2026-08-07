@@ -18,7 +18,7 @@ Ten fixed seeds exercise 10,000 normal differential operations, with additional 
 Structure-aware libFuzzer testing compares bounded public-operation sequences with that reference model and checks structural invariants after every operation.
 This increases defensive test coverage but does not prove correctness or imply that fuzzing has discovered a bug.
 Phase 3A adds a benchmark-only portable clock library and startup self-check that can refuse unresolved measurements.
-Phase 3B adds a benchmark-only open-loop order-book harness, raw HdrHistogram artifacts, explicit rate sweeps, and a separate synthetic coordinated-omission diagnostic.
+Phase 3B adds a benchmark-only open-loop order-book harness, atomic raw HdrHistogram artifact sets with explicit resolution refusal fields, explicit rate sweeps, and a bounded separate synthetic coordinated-omission diagnostic.
 Steady-clock fallback can pass clock safety for local regression use but is always marked non-publishable.
 Gateway sequencing and process-boundary interfaces are not implemented yet.
 No latency or throughput claims should be inferred from this repository.

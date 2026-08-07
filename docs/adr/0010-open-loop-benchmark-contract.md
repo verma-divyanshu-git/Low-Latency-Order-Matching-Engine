@@ -13,26 +13,37 @@ A high dynamic-range distribution is required to retain tails without storing on
 ## Decision
 
 The engine benchmark uses precomputed open-loop intended arrivals.
-Checked rational arithmetic converts an explicit requested rate and calibrated tick ratio into absolute tick offsets without iterative drift.
+Checked rational arithmetic fully cancels factors and converts an explicit requested rate and calibrated tick ratio into nearest-rounded absolute tick offsets without iterative drift or floor bias.
 An early event waits until its intended arrival.
+AUX changes do not terminate an early wait.
 A late event starts immediately.
 Latency is measured from intended arrival through completion.
-Actual-start lateness and event backlog are separate observations.
+Actual-start lateness and additional already-arrived events behind the current event are separate observations.
+Immediate pre-submit and post-submit AUX differences discard only that event's measured intervals.
+Migration never reschedules later events.
 Backward and migrated intervals are discarded and counted.
 
 Maker liquidity, schedules, book capacity, trade output, and histograms are fully allocated before warmup and measurement.
+The benchmark rejects checked memory plans above 256 MiB rather than weakening the core's caller-capacity contract.
 `crossing-limit` consumes one maker per event.
 `sweep-3-level` consumes one maker at each of three disjoint ascending levels per event.
-Every result and trade is validated and folded into a checksum.
+Completion is captured immediately after submission returns.
+Every result and trade is then validated and folded into a checksum outside service timing.
+Achieved completion rate uses all executed operations and the first-to-last completion interval across `N - 1` intervals.
 
 HdrHistogram_c is a benchmark-only dependency pinned to commit `18c7a324383dded1451d15621cd018b0048057d0`.
 Open-loop values use raw recording only.
 A separate closed-loop synthetic diagnostic may call coordinated-omission correction with an explicit expected interval.
+Checked preflight rejects diagnostic configurations that can exceed 10,000,000 corrected records.
 Diagnostic raw and corrected artifacts are named separately and cannot support engine claims.
+Their top-level claim scope is `diagnostic_only`, while nested operation qualification remains unevaluated and nonpublishable.
 
-Each run writes recorded-bucket CSV, percentile text, and schema-versioned strict JSON.
+Each run writes recorded-bucket CSV, full Hdr percentile-iteration text with highest-equivalent-value semantics, and schema-versioned strict JSON.
+Files are checked in a unique staging directory and atomically renamed as one final run directory.
+Existing final directories are never overwritten.
 Clock safety is mandatory.
 Source and operation publication qualification are separate.
+Operation resolution is evaluated even when the source itself is regression-only, and JSON retains both refusal reasons plus quantization fields.
 Failure of the 10x effective-granularity rule produces successful local `regression_only` artifacts, while an unsafe clock fails the run.
 The macOS steady fallback is permanently regression-only.
 

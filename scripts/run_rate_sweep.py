@@ -17,12 +17,17 @@ REQUIRED_FIELDS = {
     "mode",
     "scenario",
     "count",
+    "executed_operations",
     "p50_ns",
     "p99_ns",
     "p99_9_ns",
     "requested_rate",
+    "achieved_completion_rate",
     "max_backlog",
+    "max_lateness_ns",
     "claim_scope",
+    "operation_resolution_reason",
+    "effective_granularity_ns",
 }
 
 
@@ -36,7 +41,9 @@ def escape_xml(value: str) -> str:
     )
 
 
-def load_summary(path: Path) -> dict[str, Any]:
+def load_summary(
+    path: Path, expected_scenario: str, expected_rate: int, expected_samples: int
+) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     missing = REQUIRED_FIELDS.difference(data)
     if missing:
@@ -45,11 +52,34 @@ def load_summary(path: Path) -> dict[str, Any]:
         raise ValueError(f"{path}: unsupported schema or mode")
     if data["claim_scope"] not in {"regression_only", "publishable_candidate"}:
         raise ValueError(f"{path}: invalid claim_scope")
-    for field in ("count", "p50_ns", "p99_ns", "p99_9_ns", "requested_rate", "max_backlog"):
-        if isinstance(data[field], bool) or not isinstance(data[field], (int, float)):
-            raise ValueError(f"{path}: {field} must be numeric")
-        if not math.isfinite(float(data[field])) or float(data[field]) < 0:
-            raise ValueError(f"{path}: {field} must be finite and non-negative")
+    integer_fields = (
+        "count",
+        "executed_operations",
+        "p50_ns",
+        "p99_ns",
+        "p99_9_ns",
+        "requested_rate",
+        "max_backlog",
+        "max_lateness_ns",
+        "effective_granularity_ns",
+    )
+    for field in integer_fields:
+        if type(data[field]) is not int or data[field] < 0:
+            raise ValueError(f"{path}: {field} must be a non-negative integer")
+    achieved_rate = data["achieved_completion_rate"]
+    if isinstance(achieved_rate, bool) or not isinstance(achieved_rate, (int, float)):
+        raise ValueError(f"{path}: achieved_completion_rate must be numeric")
+    if not math.isfinite(float(achieved_rate)) or achieved_rate < 0:
+        raise ValueError(f"{path}: achieved_completion_rate must be finite and non-negative")
+    expected = {
+        "mode": "open-loop",
+        "scenario": expected_scenario,
+        "requested_rate": expected_rate,
+        "executed_operations": expected_samples,
+    }
+    for field, value in expected.items():
+        if data[field] != value:
+            raise ValueError(f"{path}: {field} does not match invocation")
     return data
 
 
@@ -76,10 +106,12 @@ def render_svg(summaries: list[dict[str, Any]], title: str) -> str:
         "<style>text{font-family:system-ui,sans-serif;fill:#172033}.axis{stroke:#60708a;stroke-width:1}"
         ".line{fill:none;stroke:#1769aa;stroke-width:2}.publishable{fill:#1769aa}"
         ".regression{fill:white;stroke:#c43c39;stroke-width:2;stroke-dasharray:3 2}"
+        ".regression-unresolved{fill:#fff4e5;stroke:#b85c00;stroke-width:3}"
         ".note{font-size:12px;fill:#526173}</style>",
         f'<rect width="{width}" height="{height}" fill="#f7f9fc"/>',
         f'<text x="40" y="34" font-size="20">{escape_xml(title)}</text>',
-        '<text class="note" x="40" y="55">Points preserve harness claim_scope; no saturation conclusion.</text>',
+        '<text class="note" x="40" y="55">Solid: candidate; dashed red: regression; '
+        "orange: below timer resolution. No saturation conclusion.</text>",
     ]
     for panel_index, (field, label) in enumerate(panels):
         column = panel_index % 2
@@ -110,10 +142,22 @@ def render_svg(summaries: list[dict[str, Any]], title: str) -> str:
             ]
         )
         for (x, y), summary in zip(points, summaries, strict=True):
-            point_class = (
-                "regression" if summary["claim_scope"] == "regression_only" else "publishable"
+            if summary["operation_resolution_reason"] == "operation_below_resolution":
+                point_class = "regression-unresolved"
+                resolution = "below timer resolution"
+            elif summary["claim_scope"] == "regression_only":
+                point_class = "regression"
+                resolution = "source regression only"
+            else:
+                point_class = "publishable"
+                resolution = "publication candidate"
+            tooltip = escape_xml(
+                f"{resolution}; quantization {summary['effective_granularity_ns']} ns"
             )
-            parts.append(f'<circle class="{point_class}" cx="{x:.2f}" cy="{y:.2f}" r="5"/>')
+            parts.append(
+                f'<circle class="{point_class}" cx="{x:.2f}" cy="{y:.2f}" r="5">'
+                f"<title>{tooltip}</title></circle>"
+            )
     parts.append("</svg>")
     return "\n".join(parts)
 
@@ -136,7 +180,7 @@ def main() -> int:
     summaries = []
     for rate in args.rates:
         run_dir = args.output_dir / f"rate-{rate}"
-        subprocess.run(
+        completed = subprocess.run(
             [
                 str(args.executable),
                 "--mode",
@@ -153,20 +197,31 @@ def main() -> int:
                 str(run_dir),
             ],
             check=True,
+            capture_output=True,
+            text=True,
         )
-        summaries.append(load_summary(run_dir / f"open-loop-{args.scenario}-summary.json"))
+        output_lines = completed.stdout.splitlines()
+        if not output_lines:
+            raise ValueError(f"rate {rate}: benchmark did not report a summary path")
+        summary_path = Path(output_lines[-1])
+        if run_dir.resolve() not in summary_path.resolve().parents:
+            raise ValueError(f"rate {rate}: summary path escaped the requested output directory")
+        summaries.append(load_summary(summary_path, args.scenario, rate, args.samples))
 
     csv_path = args.output_dir / f"{args.scenario}-rate-sweep.csv"
     fields = [
         "requested_rate",
-        "achieved_rate",
+        "achieved_completion_rate",
         "count",
+        "executed_operations",
         "p50_ns",
         "p99_ns",
         "p99_9_ns",
         "max_backlog",
         "max_lateness_ns",
         "claim_scope",
+        "operation_resolution_reason",
+        "effective_granularity_ns",
     ]
     with csv_path.open("w", newline="", encoding="utf-8") as output:
         writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore", lineterminator="\n")
