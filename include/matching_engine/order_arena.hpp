@@ -3,11 +3,21 @@
 
 #include "matching_engine/order.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <vector>
+#include <memory>
+#include <stdexcept>
 
 namespace matching_engine {
+
+namespace detail {
+
+[[nodiscard]] constexpr std::uint32_t next_generation(std::uint32_t generation) noexcept {
+  return generation == std::numeric_limits<std::uint32_t>::max() ? 1U : generation + 1U;
+}
+
+} // namespace detail
 
 enum class ArenaError : std::uint8_t {
   none,
@@ -22,11 +32,11 @@ struct AcquireResult {
 
 class OrderArena {
 public:
-  explicit OrderArena(std::uint32_t capacity)
-      : slots_(capacity, empty_order()), generations_(capacity, 1U),
-        free_next_(capacity, kInvalidIndex), live_(capacity, 0U), capacity_(capacity) {
+  explicit OrderArena(std::size_t capacity)
+      : capacity_(checked_capacity(capacity)),
+        slots_(capacity_ == 0U ? nullptr : std::make_unique<Slot[]>(capacity_)) {
     for (std::uint32_t index = 0; index < capacity_; ++index) {
-      free_next_[index] = index + 1U < capacity_ ? index + 1U : kInvalidIndex;
+      slots_[index].free_next = index == capacity_ - 1U ? kInvalidIndex : index + 1U;
     }
     if (capacity_ != 0U) {
       free_head_ = 0U;
@@ -44,19 +54,21 @@ public:
     }
 
     const std::uint32_t index = free_head_;
-    free_head_ = free_next_[index];
-    slots_[index] = order;
-    live_[index] = 1U;
+    Slot& slot = slots_[index];
+    free_head_ = slot.free_next;
+    slot.order = order;
+    slot.live = true;
     ++size_;
-    return {.handle = {.index = index, .generation = generations_[index]},
-            .error = ArenaError::none};
+    return {.handle = {.index = index, .generation = slot.generation}, .error = ArenaError::none};
   }
 
+  // The returned pointer is borrowed only until this handle is released.
+  // Retaining it after release can alias a future occupant and bypass generation validation.
   [[nodiscard]] Order* resolve(Handle handle) noexcept {
     if (!is_live_handle(handle)) {
       return nullptr;
     }
-    return &slots_[handle.index];
+    return &slots_[handle.index].order;
   }
 
   [[nodiscard]] ArenaError release(Handle handle) noexcept {
@@ -65,11 +77,10 @@ public:
     }
 
     const std::uint32_t index = handle.index;
-    live_[index] = 0U;
-    generations_[index] = generations_[index] == std::numeric_limits<std::uint32_t>::max()
-                              ? 1U
-                              : generations_[index] + 1U;
-    free_next_[index] = free_head_;
+    Slot& slot = slots_[index];
+    slot.live = false;
+    slot.generation = detail::next_generation(slot.generation);
+    slot.free_next = free_head_;
     free_head_ = index;
     --size_;
     return ArenaError::none;
@@ -83,8 +94,8 @@ public:
   }
 
 private:
-  [[nodiscard]] static constexpr Order empty_order() noexcept {
-    return {
+  struct Slot {
+    Order order{
         .id = OrderId{0U},
         .remaining = Quantity{0U},
         .prev_index = kInvalidIndex,
@@ -92,18 +103,25 @@ private:
         .encoded_level_side = 0U,
         .reserved_flags = 0U,
     };
+    std::uint32_t generation{1U};
+    std::uint32_t free_next{kInvalidIndex};
+    bool live{};
+  };
+
+  [[nodiscard]] static std::uint32_t checked_capacity(std::size_t capacity) {
+    if (capacity > std::numeric_limits<std::uint32_t>::max()) {
+      throw std::length_error{"OrderArena capacity exceeds handle index range"};
+    }
+    return static_cast<std::uint32_t>(capacity);
   }
 
   [[nodiscard]] bool is_live_handle(Handle handle) const noexcept {
-    return handle.generation != 0U && handle.index < capacity_ && live_[handle.index] != 0U &&
-           generations_[handle.index] == handle.generation;
+    return handle.generation != 0U && handle.index < capacity_ && slots_[handle.index].live &&
+           slots_[handle.index].generation == handle.generation;
   }
 
-  std::vector<Order> slots_;
-  std::vector<std::uint32_t> generations_;
-  std::vector<std::uint32_t> free_next_;
-  std::vector<std::uint8_t> live_;
   std::uint32_t capacity_;
+  std::unique_ptr<Slot[]> slots_;
   std::uint32_t size_{};
   std::uint32_t free_head_{kInvalidIndex};
 };

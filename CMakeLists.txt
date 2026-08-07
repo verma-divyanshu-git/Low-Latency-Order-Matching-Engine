@@ -27,7 +27,7 @@ else()
 endif()
 option(ENGINE_BUILD_TESTS "Build matching engine tests" ${ENGINE_BUILD_TESTS_DEFAULT})
 
-if(ENGINE_BUILD_TESTS)
+if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
   include(FetchContent)
   FetchContent_Declare(
     googletest

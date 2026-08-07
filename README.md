@@ -48,7 +48,7 @@ Measurement rules are defined before publishing numbers in [ADR-0002](docs/adr/0
 ## Build
 
 The minimum supported CMake version is 3.22, and presets use Ninja.
-A compiler with the C++23 features required by future targets will be needed once implementation begins.
+A compiler supporting the C++23 features used by the core library is required.
 
 ```sh
 cmake --preset debug
@@ -57,7 +57,7 @@ ctest --preset debug
 ```
 
 Tests use a pinned GoogleTest checkout and are enabled by default only when this repository is the top-level CMake project.
-Set `-DENGINE_BUILD_TESTS=OFF` to configure the dependency-free core without fetching or building tests.
+Set either `-DBUILD_TESTING=OFF` or `-DENGINE_BUILD_TESTS=OFF` to configure the dependency-free core without fetching or building tests.
 Use `release` in place of `debug` for an optimized build.
 The `asan`, `ubsan`, and `tsan` presets enable one sanitizer at a time.
 The `fuzz` preset requires an upstream Clang distribution with working libFuzzer and AddressSanitizer runtimes.
