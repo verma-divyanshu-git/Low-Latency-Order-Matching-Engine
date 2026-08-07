@@ -63,6 +63,31 @@ private:
   std::filesystem::path previous_;
 };
 
+struct ParentSwapContext {
+  std::filesystem::path original_parent;
+  std::filesystem::path moved_parent;
+  std::filesystem::path decoy_path;
+  bool succeeded{};
+};
+
+void swap_parent_and_create_decoy(void* raw_context) noexcept {
+  auto& context = *static_cast<ParentSwapContext*>(raw_context);
+  if (::rename(context.original_parent.c_str(), context.moved_parent.c_str()) != 0 ||
+      ::mkdir(context.original_parent.c_str(), 0700) != 0) {
+    return;
+  }
+  const int decoy =
+      ::open(context.decoy_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+  if (decoy < 0) {
+    return;
+  }
+  constexpr std::byte marker{0x5a};
+  const bool written =
+      ::write(decoy, &marker, sizeof(marker)) == static_cast<ssize_t>(sizeof(marker));
+  const bool closed = ::close(decoy) == 0;
+  context.succeeded = written && closed;
+}
+
 void overwrite_byte(const std::filesystem::path& path, std::uint64_t offset, std::byte value) {
   const int descriptor = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
   ASSERT_GE(descriptor, 0);
@@ -186,6 +211,69 @@ TEST(JournalTest, CreatesRelativePathWithoutExplicitParent) {
   EXPECT_TRUE(std::filesystem::exists("commands.journal"));
 }
 
+TEST(JournalTest, RejectsMaliciousOrAmbiguousBasenames) {
+  TemporaryDirectory temporary;
+  ScopedCurrentPath current_path{temporary.path()};
+  const std::string embedded_nul{"bad\0name", 8U};
+  const std::array<std::filesystem::path, 7> invalid_paths{
+      "", ".", "..", "commands.journal/", "nested/.", "nested/..", embedded_nul};
+
+  for (const auto& path : invalid_paths) {
+    const auto created = MmapJournal::create(path, 1U);
+    ASSERT_FALSE(created.has_value());
+    EXPECT_EQ(created.error().operation, JournalError::invalid_path);
+
+    const auto opened = MmapJournal::open(path);
+    ASSERT_FALSE(opened.has_value());
+    EXPECT_EQ(opened.error().operation, JournalError::invalid_path);
+  }
+}
+
+TEST(JournalTest, RetainedParentIdentitySurvivesRenameAndControlsCleanup) {
+  TemporaryDirectory temporary;
+  const auto original_parent = temporary.path() / "original";
+  const auto moved_parent = temporary.path() / "moved";
+  ASSERT_TRUE(std::filesystem::create_directory(original_parent));
+  const auto path = original_parent / "commands.journal";
+  ParentSwapContext context{
+      .original_parent = original_parent, .moved_parent = moved_parent, .decoy_path = path};
+  journal_testing::fail_for_path(
+      path, journal_testing::failure_mask(journal_testing::FailurePoint::create_parent_fsync));
+  journal_testing::run_after_parent_open(path, swap_parent_and_create_decoy, &context);
+
+  const auto created = MmapJournal::create(path, 1U);
+
+  ASSERT_TRUE(context.succeeded);
+  ASSERT_FALSE(created.has_value());
+  EXPECT_EQ(created.error().operation, JournalError::io_error);
+  EXPECT_EQ(created.error().cleanup, JournalError::none);
+  EXPECT_FALSE(std::filesystem::exists(moved_parent / "commands.journal"));
+  EXPECT_EQ(std::filesystem::file_size(path), 1U);
+}
+
+TEST(JournalTest, OpenUsesJournalFromRetainedParentAfterRename) {
+  TemporaryDirectory temporary;
+  const auto original_parent = temporary.path() / "original";
+  const auto moved_parent = temporary.path() / "moved";
+  ASSERT_TRUE(std::filesystem::create_directory(original_parent));
+  const auto path = original_parent / "commands.journal";
+  auto created = MmapJournal::create(path, 1U);
+  ASSERT_TRUE(created.has_value());
+  ASSERT_EQ(created->append(command(1, 1)), JournalError::none);
+  ASSERT_EQ(created->close(), JournalError::none);
+  ParentSwapContext context{
+      .original_parent = original_parent, .moved_parent = moved_parent, .decoy_path = path};
+  journal_testing::run_after_parent_open(path, swap_parent_and_create_decoy, &context);
+
+  auto opened = MmapJournal::open(path);
+
+  ASSERT_TRUE(context.succeeded);
+  ASSERT_TRUE(opened.has_value());
+  EXPECT_EQ(opened->size(), 1U);
+  EXPECT_EQ(*opened->read(0U), command(1, 1));
+  EXPECT_EQ(std::filesystem::file_size(path), 1U);
+}
+
 TEST(JournalTest, RejectsInvalidCapacityAndExistingPathWithoutMutation) {
   TemporaryDirectory temporary;
   const auto path = temporary.path() / "commands.journal";
@@ -208,6 +296,13 @@ TEST(JournalTest, RejectsSymlinkAndNonRegularFile) {
   ASSERT_EQ(::symlink(target.c_str(), link.c_str()), 0);
   EXPECT_EQ(MmapJournal::open(link).error().operation, JournalError::symlink);
   EXPECT_EQ(MmapJournal::open(temporary.path()).error().operation, JournalError::not_regular_file);
+
+  const auto real_parent = temporary.path() / "real-parent";
+  const auto linked_parent = temporary.path() / "linked-parent";
+  ASSERT_TRUE(std::filesystem::create_directory(real_parent));
+  ASSERT_EQ(::symlink(real_parent.c_str(), linked_parent.c_str()), 0);
+  EXPECT_EQ(MmapJournal::create(linked_parent / "commands.journal", 1U).error().operation,
+            JournalError::symlink);
 }
 
 TEST(JournalTest, RejectsBadPermissionsWhereEnforced) {
@@ -432,26 +527,102 @@ TEST(JournalTest, ParentDirectorySyncFailureCleansUpCreatedEntry) {
   EXPECT_FALSE(std::filesystem::exists(path));
 }
 
-TEST(JournalTest, CreationCleanupReportsEveryFailedSyscallBranch) {
+TEST(JournalTest, ParentDirectoryOpenAndCloseFailuresAreExplicit) {
+  TemporaryDirectory temporary;
+  const auto open_path = temporary.path() / "open-failure.journal";
+  journal_testing::fail_for_path(
+      open_path,
+      journal_testing::failure_mask(journal_testing::FailurePoint::parent_directory_open));
+  const auto open_failed = MmapJournal::create(open_path, 1U);
+  ASSERT_FALSE(open_failed.has_value());
+  EXPECT_EQ(open_failed.error().operation, JournalError::io_error);
+  EXPECT_EQ(open_failed.error().cleanup, JournalError::none);
+  EXPECT_FALSE(std::filesystem::exists(open_path));
+
+  const auto close_path = temporary.path() / "close-failure.journal";
+  journal_testing::fail_for_path(
+      close_path,
+      journal_testing::failure_mask(journal_testing::FailurePoint::operation_parent_close));
+  const auto close_failed = MmapJournal::create(close_path, 1U);
+  ASSERT_FALSE(close_failed.has_value());
+  EXPECT_EQ(close_failed.error().operation, JournalError::io_error);
+  EXPECT_EQ(close_failed.error().cleanup, JournalError::none);
+  EXPECT_FALSE(std::filesystem::exists(close_path));
+
+  const auto existing_path = temporary.path() / "existing.journal";
+  auto existing = MmapJournal::create(existing_path, 1U);
+  ASSERT_TRUE(existing.has_value());
+  ASSERT_EQ(existing->close(), JournalError::none);
+  journal_testing::fail_for_path(
+      existing_path,
+      journal_testing::failure_mask(journal_testing::FailurePoint::operation_parent_close));
+  const auto existing_close_failed = MmapJournal::open(existing_path);
+  ASSERT_FALSE(existing_close_failed.has_value());
+  EXPECT_EQ(existing_close_failed.error().operation, JournalError::io_error);
+  EXPECT_EQ(existing_close_failed.error().cleanup, JournalError::none);
+  EXPECT_TRUE(MmapJournal::open(existing_path).has_value());
+}
+
+TEST(JournalTest, CleanupUnlinkFailureRetainsCreatedPathForExplicitTeardown) {
+  TemporaryDirectory temporary;
+  const auto path = temporary.path() / "commands.journal";
+  const std::uint64_t failures =
+      journal_testing::failure_mask(journal_testing::FailurePoint::create_parent_fsync) |
+      journal_testing::failure_mask(journal_testing::FailurePoint::cleanup_unlink);
+  journal_testing::fail_for_path(path, failures);
+
+  const auto created = MmapJournal::create(path, 1U);
+
+  ASSERT_FALSE(created.has_value());
+  EXPECT_EQ(created.error().operation, JournalError::io_error);
+  EXPECT_EQ(created.error().cleanup, JournalError::io_error);
+  EXPECT_TRUE(std::filesystem::exists(path));
+  EXPECT_TRUE(std::filesystem::remove(path));
+}
+
+TEST(JournalTest, CleanupDirectorySyncFailureDoesNotLeakResources) {
+  TemporaryDirectory temporary;
+  const auto path = temporary.path() / "commands.journal";
+  const std::uint64_t failures =
+      journal_testing::failure_mask(journal_testing::FailurePoint::create_parent_fsync) |
+      journal_testing::failure_mask(journal_testing::FailurePoint::cleanup_parent_fsync);
+  journal_testing::fail_for_path(path, failures);
+
+  const auto created = MmapJournal::create(path, 1U);
+
+  ASSERT_FALSE(created.has_value());
+  EXPECT_EQ(created.error().operation, JournalError::io_error);
+  EXPECT_EQ(created.error().cleanup, JournalError::io_error);
+  EXPECT_FALSE(std::filesystem::exists(path));
+}
+
+TEST(JournalTest, LeakingCleanupFailuresAreIsolatedToChildProcess) {
   TemporaryDirectory temporary;
   const std::array cleanup_failures{
       journal_testing::FailurePoint::cleanup_munmap,
-      journal_testing::FailurePoint::cleanup_close,
-      journal_testing::FailurePoint::cleanup_unlink,
-      journal_testing::FailurePoint::cleanup_parent_fsync,
+      journal_testing::FailurePoint::cleanup_file_close,
+      journal_testing::FailurePoint::cleanup_parent_close,
   };
   for (std::size_t index = 0U; index < cleanup_failures.size(); ++index) {
     const auto path = temporary.path() / ("commands-" + std::to_string(index) + ".journal");
-    const std::uint64_t failures =
-        journal_testing::failure_mask(journal_testing::FailurePoint::create_parent_fsync) |
-        journal_testing::failure_mask(cleanup_failures[index]);
-    journal_testing::fail_for_path(path, failures);
+    const pid_t child = ::fork();
+    ASSERT_GE(child, 0);
+    if (child == 0) {
+      const std::uint64_t failures =
+          journal_testing::failure_mask(journal_testing::FailurePoint::create_parent_fsync) |
+          journal_testing::failure_mask(cleanup_failures[index]);
+      journal_testing::fail_for_path(path, failures);
+      const auto created = MmapJournal::create(path, 1U);
+      const bool expected = !created.has_value() &&
+                            created.error().operation == JournalError::io_error &&
+                            created.error().cleanup == JournalError::io_error;
+      ::_exit(expected ? 0 : 1);
+    }
 
-    const auto created = MmapJournal::create(path, 1U);
-
-    ASSERT_FALSE(created.has_value());
-    EXPECT_EQ(created.error().operation, JournalError::io_error);
-    EXPECT_EQ(created.error().cleanup, JournalError::io_error);
+    int status{};
+    ASSERT_EQ(::waitpid(child, &status, 0), child);
+    ASSERT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), 0);
   }
 }
 
@@ -477,6 +648,7 @@ TEST(JournalTest, CloseReportsInjectedSyncAndCleanupFailures) {
     ASSERT_TRUE(created.has_value());
     journal_testing::fail_for_journal(&*created, journal_testing::failure_mask(failures[index]));
     EXPECT_EQ(created->close(), JournalError::io_error);
+    EXPECT_EQ(created->close(), JournalError::none);
   }
 }
 

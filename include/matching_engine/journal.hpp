@@ -26,6 +26,7 @@ inline constexpr std::uint64_t kRecordReservedOffset = 64U;
 
 enum class JournalError : std::uint8_t {
   none,
+  invalid_path,
   invalid_capacity,
   already_exists,
   not_found,
@@ -71,6 +72,8 @@ struct JournalOpenFailure {
 namespace journal_testing {
 
 enum class FailurePoint : std::uint8_t {
+  parent_directory_open,
+  operation_parent_close,
   create_header_msync,
   create_file_fsync,
   create_parent_fsync,
@@ -79,9 +82,10 @@ enum class FailurePoint : std::uint8_t {
   append_post_publish_msync,
   append_post_publish_fsync,
   cleanup_munmap,
-  cleanup_close,
+  cleanup_file_close,
   cleanup_unlink,
   cleanup_parent_fsync,
+  cleanup_parent_close,
   close_msync,
   close_munmap,
   close_file_fsync,
@@ -94,6 +98,9 @@ enum class FailurePoint : std::uint8_t {
 
 void fail_for_path(const std::filesystem::path& path, std::uint64_t failures) noexcept;
 void fail_for_journal(const void* identity, std::uint64_t failures) noexcept;
+using ParentOpenedHook = void (*)(void*) noexcept;
+void run_after_parent_open(const std::filesystem::path& path, ParentOpenedHook hook,
+                           void* context) noexcept;
 
 } // namespace journal_testing
 #endif

@@ -70,9 +70,15 @@ Capacity is fixed at creation from 1 through 1,000,000 records.
 The maximum file size is 80,000,064 bytes.
 Creation uses exclusive creation, mode `0600`, close-on-exec, and no-follow behavior where the platform supplies it.
 Only regular files with exact mode `0600`, including no set-user-ID, set-group-ID, or sticky bits, exact size, and a valid canonical header are accepted.
-After synchronizing the initialized mapping and file, creation opens and synchronizes the parent directory before reporting success so the directory entry is included in the durability request.
+A journal path must end in one nonempty basename.
+Empty paths, trailing separators, `.` or `..` basenames, embedded null bytes, and malformed final components are rejected as `invalid_path`.
 A relative path without an explicit parent uses `.`, while an absolute path directly below root uses `/`.
+Create and open resolve the parent directory first, retain that exact descriptor, and use only `openat` with the validated basename for the journal entry.
 Directory descriptors use close-on-exec, directory-only opening where available, and no-follow behavior for the final parent component where available.
+After synchronizing the initialized mapping and file, creation synchronizes that retained parent descriptor before reporting success so the directory entry is included in the durability request.
+Failed-create removal uses `unlinkat` on the same retained descriptor, so renaming the parent or placing a replacement directory at the original pathname cannot redirect creation, synchronization, or cleanup to the replacement.
+Earlier parent path components are still resolved by the operating system while the parent directory is opened.
+This implementation does not perform component-by-component `openat` traversal, so directory permissions remain required to constrain concurrent replacement during that initial resolution.
 The implementation supports macOS and Linux.
 
 ## Append, recovery, and durability
@@ -115,6 +121,8 @@ Protect the containing directory as well as the `0600` file.
 Capacity exhaustion is explicit and requires planned rotation in a future snapshot and compaction phase.
 Create and open errors report the primary operation failure separately from cleanup failure.
 `journal_failure_messages` returns both messages, including an explicit `none` cleanup message, so callers do not silently discard cleanup status.
-Failed creation attempts unmap, close, and unlink in order, checking each result.
-After unlink, cleanup attempts another parent-directory synchronization so removal is made durable where the platform and filesystem honor the request.
+Failed creation attempts to unmap, unlink through the retained parent descriptor while the locked journal descriptor is still open, synchronize that parent, close the journal descriptor, and finally close the parent descriptor.
+Every cleanup syscall result is checked.
+Test-only failure injection occurs before its target syscall, so a reported injected failure never pretends that the syscall ran.
+After `unlinkat`, cleanup attempts another synchronization of the retained parent descriptor so removal is made durable where the platform and filesystem honor the request.
 If cleanup itself fails, the caller receives that fact explicitly and must inspect or remove any remaining path rather than assuming cleanup succeeded.

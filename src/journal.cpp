@@ -23,6 +23,8 @@ constexpr std::array<std::byte, 8> kMagic{std::byte{'M'}, std::byte{'E'}, std::b
 constexpr std::uint32_t kCommittedMarker = 0x54494d43U;
 
 enum class SyscallPoint : std::uint8_t {
+  parent_directory_open,
+  operation_parent_close,
   create_header_msync,
   create_file_fsync,
   create_parent_fsync,
@@ -31,9 +33,10 @@ enum class SyscallPoint : std::uint8_t {
   append_post_publish_msync,
   append_post_publish_fsync,
   cleanup_munmap,
-  cleanup_close,
+  cleanup_file_close,
   cleanup_unlink,
   cleanup_parent_fsync,
+  cleanup_parent_close,
   close_msync,
   close_munmap,
   close_file_fsync,
@@ -46,6 +49,8 @@ struct FailureScope {
   const void* identity{};
   std::uint64_t failures{};
   bool path_scoped{};
+  journal_testing::ParentOpenedHook parent_opened_hook{};
+  void* hook_context{};
 };
 
 thread_local FailureScope failure_scope;
@@ -61,6 +66,15 @@ thread_local FailureScope failure_scope;
   }
   failure_scope.failures &= ~bit;
   return true;
+}
+
+void run_parent_opened_hook(const std::filesystem::path& path) noexcept {
+  if (failure_scope.path != path || failure_scope.parent_opened_hook == nullptr) {
+    return;
+  }
+  const journal_testing::ParentOpenedHook hook =
+      std::exchange(failure_scope.parent_opened_hook, nullptr);
+  hook(failure_scope.hook_context);
 }
 #endif
 
@@ -160,9 +174,33 @@ void write_u64(std::span<std::byte> output, std::size_t offset, std::uint64_t va
   return errno == EWOULDBLOCK || errno == EAGAIN ? JournalError::locked : errno_error(errno);
 }
 
-[[nodiscard]] std::filesystem::path parent_directory(const std::filesystem::path& path) {
-  const std::filesystem::path parent = path.parent_path();
-  return parent.empty() ? std::filesystem::path{"."} : parent;
+struct JournalPath {
+  std::filesystem::path parent;
+  std::filesystem::path basename;
+};
+
+[[nodiscard]] std::expected<JournalPath, JournalError>
+parse_journal_path(const std::filesystem::path& path) noexcept {
+  try {
+    const auto& native = path.native();
+    if (native.empty() || native.back() == '/' || native.find('\0') != native.npos) {
+      return std::unexpected{JournalError::invalid_path};
+    }
+    const std::filesystem::path basename = path.filename();
+    const auto& basename_native = basename.native();
+    if (basename_native.empty() || basename_native == "." || basename_native == ".." ||
+        basename_native.find('/') != basename_native.npos ||
+        basename_native.find('\0') != basename_native.npos) {
+      return std::unexpected{JournalError::invalid_path};
+    }
+    std::filesystem::path parent = path.parent_path();
+    if (parent.empty()) {
+      parent = ".";
+    }
+    return JournalPath{.parent = std::move(parent), .basename = basename};
+  } catch (...) {
+    return std::unexpected{JournalError::io_error};
+  }
 }
 
 [[nodiscard]] int directory_open_flags() noexcept {
@@ -176,72 +214,95 @@ void write_u64(std::span<std::byte> output, std::size_t offset, std::uint64_t va
   return flags;
 }
 
-[[nodiscard]] bool sync_parent_directory(const std::filesystem::path& path,
-                                         SyscallPoint point) noexcept {
-  const std::filesystem::path parent = parent_directory(path);
-  const int descriptor = ::open(parent.c_str(), directory_open_flags());
-  if (descriptor < 0) {
-    return false;
+[[nodiscard]] int open_parent_directory(const JournalPath& journal_path,
+                                        const std::filesystem::path& full_path) noexcept {
+  if (should_fail(SyscallPoint::parent_directory_open, &full_path, nullptr)) {
+    errno = EIO;
+    return -1;
   }
-  const bool sync_failed = sync_file(descriptor, point, &path, nullptr) != 0;
-  const bool close_failed = ::close(descriptor) != 0;
-  return !sync_failed && !close_failed;
+  const int descriptor = ::open(journal_path.parent.c_str(), directory_open_flags());
+  if (descriptor < 0 && errno == ENOTDIR) {
+    const int open_error = errno;
+    struct stat status{};
+    if (::lstat(journal_path.parent.c_str(), &status) == 0 && S_ISLNK(status.st_mode)) {
+      errno = ELOOP;
+    } else {
+      errno = open_error;
+    }
+  }
+#if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
+  if (descriptor >= 0) {
+    run_parent_opened_hook(full_path);
+  }
+#endif
+  return descriptor;
 }
 
 [[nodiscard]] int cleanup_unmap(std::byte* mapping, std::size_t size,
                                 const std::filesystem::path& path) noexcept {
-  const bool injected = should_fail(SyscallPoint::cleanup_munmap, &path, nullptr);
-  const int result = ::munmap(mapping, size);
-  return injected ? -1 : result;
+  if (should_fail(SyscallPoint::cleanup_munmap, &path, nullptr)) {
+    errno = EIO;
+    return -1;
+  }
+  return ::munmap(mapping, size);
 }
 
-[[nodiscard]] int cleanup_close(int descriptor, const std::filesystem::path& path) noexcept {
-  const bool injected = should_fail(SyscallPoint::cleanup_close, &path, nullptr);
-  const int result = ::close(descriptor);
-  return injected ? -1 : result;
+[[nodiscard]] int close_descriptor(int descriptor, SyscallPoint point,
+                                   const std::filesystem::path* path,
+                                   const void* identity = nullptr) noexcept {
+  if (should_fail(point, path, identity)) {
+    errno = EIO;
+    return -1;
+  }
+  return ::close(descriptor);
 }
 
-[[nodiscard]] int cleanup_unlink(const std::filesystem::path& path) noexcept {
-  const bool injected = should_fail(SyscallPoint::cleanup_unlink, &path, nullptr);
-  const int result = ::unlink(path.c_str());
-  return injected ? -1 : result;
+[[nodiscard]] int cleanup_unlink(int parent_descriptor, const JournalPath& journal_path,
+                                 const std::filesystem::path& full_path) noexcept {
+  if (should_fail(SyscallPoint::cleanup_unlink, &full_path, nullptr)) {
+    errno = EIO;
+    return -1;
+  }
+  return ::unlinkat(parent_descriptor, journal_path.basename.c_str(), 0);
 }
 
 [[nodiscard]] int journal_unmap(std::byte* mapping, std::size_t size, SyscallPoint point,
                                 const void* identity) noexcept {
-  const bool injected = should_fail(point, nullptr, identity);
-  const int result = ::munmap(mapping, size);
-  return injected ? -1 : result;
-}
-
-[[nodiscard]] int journal_close(int descriptor, SyscallPoint point, const void* identity) noexcept {
-  const bool injected = should_fail(point, nullptr, identity);
-  const int result = ::close(descriptor);
-  return injected ? -1 : result;
+  if (should_fail(point, nullptr, identity)) {
+    errno = EIO;
+    return -1;
+  }
+  return ::munmap(mapping, size);
 }
 
 [[nodiscard]] JournalOpenFailure
-cleanup_after_open_failure(JournalError operation, int descriptor, std::byte* mapping,
-                           std::size_t mapping_size,
-                           const std::filesystem::path* created_path) noexcept {
+cleanup_after_open_failure(JournalError operation, int parent_descriptor, int descriptor,
+                           std::byte* mapping, std::size_t mapping_size,
+                           const JournalPath& journal_path, const std::filesystem::path& full_path,
+                           bool created) noexcept {
   JournalError cleanup = JournalError::none;
-  if (mapping != nullptr &&
-      (created_path == nullptr ? ::munmap(mapping, mapping_size)
-                               : cleanup_unmap(mapping, mapping_size, *created_path)) != 0) {
+  if (mapping != nullptr && (created ? cleanup_unmap(mapping, mapping_size, full_path)
+                                     : ::munmap(mapping, mapping_size)) != 0) {
     cleanup = JournalError::io_error;
+  }
+  if (created) {
+    if (cleanup_unlink(parent_descriptor, journal_path, full_path) != 0) {
+      cleanup = JournalError::io_error;
+    }
+    if (sync_file(parent_descriptor, SyscallPoint::cleanup_parent_fsync, &full_path, nullptr) !=
+        0) {
+      cleanup = JournalError::io_error;
+    }
   }
   if (descriptor >= 0 &&
-      (created_path == nullptr ? ::close(descriptor) : cleanup_close(descriptor, *created_path)) !=
-          0) {
+      close_descriptor(descriptor,
+                       created ? SyscallPoint::cleanup_file_close : SyscallPoint::close_file,
+                       created ? &full_path : nullptr) != 0) {
     cleanup = JournalError::io_error;
   }
-  if (created_path != nullptr) {
-    if (cleanup_unlink(*created_path) != 0) {
-      cleanup = JournalError::io_error;
-    }
-    if (!sync_parent_directory(*created_path, SyscallPoint::cleanup_parent_fsync)) {
-      cleanup = JournalError::io_error;
-    }
+  if (parent_descriptor >= 0 &&
+      close_descriptor(parent_descriptor, SyscallPoint::cleanup_parent_close, &full_path) != 0) {
+    cleanup = JournalError::io_error;
   }
   return {.operation = operation, .cleanup = cleanup};
 }
@@ -349,6 +410,8 @@ const char* journal_error_message(JournalError error) noexcept {
   switch (error) {
   case JournalError::none:
     return "none";
+  case JournalError::invalid_path:
+    return "invalid journal path";
   case JournalError::invalid_capacity:
     return "invalid capacity";
   case JournalError::already_exists:
@@ -407,11 +470,29 @@ JournalFailureMessages journal_failure_messages(JournalOpenFailure failure) noex
 #if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
 void journal_testing::fail_for_path(const std::filesystem::path& path,
                                     std::uint64_t failures) noexcept {
-  failure_scope = {.path = path, .identity = nullptr, .failures = failures, .path_scoped = true};
+  failure_scope = {.path = path,
+                   .identity = nullptr,
+                   .failures = failures,
+                   .path_scoped = true,
+                   .parent_opened_hook = nullptr,
+                   .hook_context = nullptr};
 }
 
 void journal_testing::fail_for_journal(const void* identity, std::uint64_t failures) noexcept {
-  failure_scope = {.path = {}, .identity = identity, .failures = failures, .path_scoped = false};
+  failure_scope = {.path = {},
+                   .identity = identity,
+                   .failures = failures,
+                   .path_scoped = false,
+                   .parent_opened_hook = nullptr,
+                   .hook_context = nullptr};
+}
+
+void journal_testing::run_after_parent_open(const std::filesystem::path& path,
+                                            ParentOpenedHook hook, void* context) noexcept {
+  failure_scope.path = path;
+  failure_scope.path_scoped = true;
+  failure_scope.parent_opened_hook = hook;
+  failure_scope.hook_context = context;
 }
 #endif
 
@@ -469,13 +550,23 @@ MmapJournal::create(const std::filesystem::path& path, std::uint64_t capacity) n
   if (!checked_file_size(capacity, file_size)) {
     return std::unexpected{JournalOpenFailure{.operation = JournalError::file_size_overflow}};
   }
-  const int descriptor = ::open(path.c_str(), open_flags(true), 0600);
-  if (descriptor < 0) {
+  const auto parsed = parse_journal_path(path);
+  if (!parsed.has_value()) {
+    return std::unexpected{JournalOpenFailure{.operation = parsed.error()}};
+  }
+  int parent_descriptor = open_parent_directory(*parsed, path);
+  if (parent_descriptor < 0) {
     return std::unexpected{JournalOpenFailure{.operation = errno_error(errno)}};
+  }
+  int descriptor = ::openat(parent_descriptor, parsed->basename.c_str(), open_flags(true), 0600);
+  if (descriptor < 0) {
+    return std::unexpected{cleanup_after_open_failure(errno_error(errno), parent_descriptor, -1,
+                                                      nullptr, 0U, *parsed, path, false)};
   }
   auto fail = [&](JournalError error, std::byte* mapping = nullptr) {
     return std::expected<MmapJournal, JournalOpenFailure>{
-        std::unexpected{cleanup_after_open_failure(error, descriptor, mapping, file_size, &path)}};
+        std::unexpected{cleanup_after_open_failure(error, parent_descriptor, descriptor, mapping,
+                                                   file_size, *parsed, path, true)}};
   };
   const JournalError lock = acquire_ownership_lock(descriptor);
   if (lock != JournalError::none) {
@@ -515,31 +606,50 @@ MmapJournal::create(const std::filesystem::path& path, std::uint64_t capacity) n
   if (mapping_sync_failed || file_sync_failed) {
     return fail(JournalError::io_error, mapping);
   }
-  if (!sync_parent_directory(path, SyscallPoint::create_parent_fsync)) {
+  if (sync_file(parent_descriptor, SyscallPoint::create_parent_fsync, &path, nullptr) != 0) {
     return fail(JournalError::io_error, mapping);
   }
+  if (close_descriptor(parent_descriptor, SyscallPoint::operation_parent_close, &path) != 0) {
+    return fail(JournalError::io_error, mapping);
+  }
+  parent_descriptor = -1;
   return MmapJournal{descriptor, mapping, file_size, capacity};
 }
 
 std::expected<MmapJournal, JournalOpenFailure>
 MmapJournal::open(const std::filesystem::path& path) noexcept {
-  struct stat path_status{};
-  if (::lstat(path.c_str(), &path_status) != 0) {
+  const auto parsed = parse_journal_path(path);
+  if (!parsed.has_value()) {
+    return std::unexpected{JournalOpenFailure{.operation = parsed.error()}};
+  }
+  int parent_descriptor = open_parent_directory(*parsed, path);
+  if (parent_descriptor < 0) {
     return std::unexpected{JournalOpenFailure{.operation = errno_error(errno)}};
+  }
+  auto fail_without_file = [&](JournalError error) {
+    return std::expected<MmapJournal, JournalOpenFailure>{
+        std::unexpected{cleanup_after_open_failure(error, parent_descriptor, -1, nullptr, 0U,
+                                                   *parsed, path, false)}};
+  };
+  struct stat path_status{};
+  if (::fstatat(parent_descriptor, parsed->basename.c_str(), &path_status, AT_SYMLINK_NOFOLLOW) !=
+      0) {
+    return fail_without_file(errno_error(errno));
   }
   if (S_ISLNK(path_status.st_mode)) {
-    return std::unexpected{JournalOpenFailure{.operation = JournalError::symlink}};
+    return fail_without_file(JournalError::symlink);
   }
   if (!S_ISREG(path_status.st_mode)) {
-    return std::unexpected{JournalOpenFailure{.operation = JournalError::not_regular_file}};
+    return fail_without_file(JournalError::not_regular_file);
   }
-  const int descriptor = ::open(path.c_str(), open_flags(false));
+  int descriptor = ::openat(parent_descriptor, parsed->basename.c_str(), open_flags(false));
   if (descriptor < 0) {
-    return std::unexpected{JournalOpenFailure{.operation = errno_error(errno)}};
+    return fail_without_file(errno_error(errno));
   }
   auto fail = [&](JournalError error, std::byte* mapping = nullptr, std::size_t mapping_size = 0U) {
-    return std::expected<MmapJournal, JournalOpenFailure>{std::unexpected{
-        cleanup_after_open_failure(error, descriptor, mapping, mapping_size, nullptr)}};
+    return std::expected<MmapJournal, JournalOpenFailure>{
+        std::unexpected{cleanup_after_open_failure(error, parent_descriptor, descriptor, mapping,
+                                                   mapping_size, *parsed, path, false)}};
   };
   const JournalError lock = acquire_ownership_lock(descriptor);
   if (lock != JournalError::none) {
@@ -582,15 +692,26 @@ MmapJournal::open(const std::filesystem::path& path) noexcept {
     return fail(JournalError::map_failed);
   }
   MmapJournal journal{descriptor, static_cast<std::byte*>(raw_mapping), file_size, capacity};
-  const JournalError recovery = journal.recover();
-  if (recovery != JournalError::none) {
-    const JournalOpenFailure failure =
-        cleanup_after_open_failure(recovery, descriptor, journal.mapping_, file_size, nullptr);
+  auto relinquish_journal_resources = [&journal] {
     journal.descriptor_ = -1;
     journal.mapping_ = nullptr;
     journal.mapping_size_ = 0U;
+  };
+  const JournalError recovery = journal.recover();
+  if (recovery != JournalError::none) {
+    const JournalOpenFailure failure = cleanup_after_open_failure(
+        recovery, parent_descriptor, descriptor, journal.mapping_, file_size, *parsed, path, false);
+    relinquish_journal_resources();
     return std::unexpected{failure};
   }
+  if (close_descriptor(parent_descriptor, SyscallPoint::operation_parent_close, &path) != 0) {
+    const JournalOpenFailure failure =
+        cleanup_after_open_failure(JournalError::io_error, parent_descriptor, descriptor,
+                                   journal.mapping_, file_size, *parsed, path, false);
+    relinquish_journal_resources();
+    return std::unexpected{failure};
+  }
+  parent_descriptor = -1;
   return journal;
 }
 
@@ -698,15 +819,21 @@ JournalError MmapJournal::close() noexcept {
   }
   if (static_cast<std::int64_t>(::getpid()) != owner_pid_) {
     JournalError result = JournalError::wrong_process;
-    if (mapping_ != nullptr && ::munmap(mapping_, mapping_size_) != 0) {
-      result = JournalError::io_error;
+    if (mapping_ != nullptr) {
+      if (::munmap(mapping_, mapping_size_) != 0) {
+        result = JournalError::io_error;
+      } else {
+        mapping_ = nullptr;
+        mapping_size_ = 0U;
+      }
     }
-    if (descriptor_ >= 0 && ::close(descriptor_) != 0) {
-      result = JournalError::io_error;
+    if (descriptor_ >= 0) {
+      if (::close(descriptor_) != 0) {
+        result = JournalError::io_error;
+      } else {
+        descriptor_ = -1;
+      }
     }
-    mapping_ = nullptr;
-    mapping_size_ = 0U;
-    descriptor_ = -1;
     return result;
   }
 
@@ -718,18 +845,20 @@ JournalError MmapJournal::close() noexcept {
     }
     if (journal_unmap(mapping_, mapping_size_, SyscallPoint::close_munmap, identity) != 0) {
       result = JournalError::io_error;
+    } else {
+      mapping_ = nullptr;
+      mapping_size_ = 0U;
     }
-    mapping_ = nullptr;
-    mapping_size_ = 0U;
   }
   if (descriptor_ >= 0) {
     if (sync_file(descriptor_, SyscallPoint::close_file_fsync, nullptr, identity) != 0) {
       result = JournalError::io_error;
     }
-    if (journal_close(descriptor_, SyscallPoint::close_file, identity) != 0) {
+    if (close_descriptor(descriptor_, SyscallPoint::close_file, nullptr, identity) != 0) {
       result = JournalError::io_error;
+    } else {
+      descriptor_ = -1;
     }
-    descriptor_ = -1;
   }
   return result;
 }

@@ -31,6 +31,8 @@ Applications must append successfully before applying the command.
 The journal permits one writer in one process and thread and retains a nonblocking advisory exclusive file lock for its open lifetime.
 It also retains the opener process ID because advisory lock ownership is inherited across `fork`; inherited children cannot append.
 Successful creation synchronizes both initialized file contents and the containing directory entry.
+Create and open accept only a validated single basename, open the parent directory first, and resolve the entry with `openat`.
+The retained parent descriptor is also used for creation synchronization and failed-create `unlinkat`, binding those operations to one directory identity even if its pathname is renamed or replaced.
 
 ## Consequences
 
@@ -46,8 +48,10 @@ No rollback write is used to claim that an uncertain commit is absent.
 
 Mode `0600` including special-bit rejection, regular-file checks, exclusive creation, close-on-exec, no-follow opening, and advisory ownership locking reduce local file hazards.
 They do not replace directory permissions or host access control.
+The final parent component is opened without following symlinks where the platform supports it.
+Earlier components are resolved by the operating system during that one parent open rather than by component-by-component descriptor traversal.
 Advisory locks exclude cooperating opens but cannot prevent access by software that ignores them.
-Failed creation cleanup reports its own status separately and requests a second directory synchronization after unlink.
+Failed creation cleanup keeps the locked file descriptor until after `unlinkat`, reports its own status separately, and requests a second synchronization on the same retained directory descriptor.
 
 There is no snapshot, compaction, rotation, replication, authentication, or automatic corruption repair in this phase.
 Those capabilities must preserve this log's ordering and corruption policy if added.
