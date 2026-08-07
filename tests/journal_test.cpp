@@ -15,6 +15,7 @@
 #include <span>
 #include <string>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <system_error>
 #include <unistd.h>
 
@@ -44,6 +45,22 @@ public:
 
 private:
   std::filesystem::path path_;
+};
+
+class ScopedCurrentPath {
+public:
+  explicit ScopedCurrentPath(const std::filesystem::path& path)
+      : previous_{std::filesystem::current_path()} {
+    std::filesystem::current_path(path);
+  }
+
+  ~ScopedCurrentPath() {
+    std::error_code error;
+    std::filesystem::current_path(previous_, error);
+  }
+
+private:
+  std::filesystem::path previous_;
 };
 
 void overwrite_byte(const std::filesystem::path& path, std::uint64_t offset, std::byte value) {
@@ -97,7 +114,7 @@ TEST(JournalTest, CreateAppendCloseReopenAndRead) {
   TemporaryDirectory temporary;
   const auto path = temporary.path() / "commands.journal";
   auto created = MmapJournal::create(path, 3U);
-  ASSERT_TRUE(created.has_value()) << journal_error_message(created.error());
+  ASSERT_TRUE(created.has_value());
   EXPECT_EQ(created->capacity(), 3U);
   EXPECT_EQ(created->size(), 0U);
   EXPECT_EQ(created->append(command(1, 10)), JournalError::none);
@@ -105,7 +122,7 @@ TEST(JournalTest, CreateAppendCloseReopenAndRead) {
   EXPECT_EQ(created->close(), JournalError::none);
 
   auto reopened = MmapJournal::open(path);
-  ASSERT_TRUE(reopened.has_value()) << journal_error_message(reopened.error());
+  ASSERT_TRUE(reopened.has_value());
   EXPECT_EQ(reopened->size(), 2U);
   ASSERT_TRUE(reopened->read(0U).has_value());
   EXPECT_EQ(*reopened->read(0U), command(1, 10));
@@ -123,22 +140,61 @@ TEST(JournalTest, RetainsExclusiveNonblockingOwnershipUntilClose) {
 
   const auto second = MmapJournal::open(path);
   ASSERT_FALSE(second.has_value());
-  EXPECT_EQ(second.error(), JournalError::locked);
+  EXPECT_EQ(second.error().operation, JournalError::locked);
 
   ASSERT_EQ(owner->close(), JournalError::none);
   auto successor = MmapJournal::open(path);
   ASSERT_TRUE(successor.has_value());
 }
 
+TEST(JournalTest, ForkedChildCannotAppendThroughInheritedOwner) {
+  TemporaryDirectory temporary;
+  auto owner = MmapJournal::create(temporary.path() / "commands.journal", 1U);
+  ASSERT_TRUE(owner.has_value());
+  int child_result[2]{};
+  ASSERT_EQ(::pipe(child_result), 0);
+
+  const pid_t child = ::fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) {
+    static_cast<void>(::close(child_result[0]));
+    const auto result = static_cast<std::uint8_t>(owner->append(command(1, 1)));
+    const ssize_t written = ::write(child_result[1], &result, sizeof(result));
+    static_cast<void>(written);
+    ::_exit(0);
+  }
+
+  ASSERT_EQ(::close(child_result[1]), 0);
+  std::uint8_t result{};
+  ASSERT_EQ(::read(child_result[0], &result, sizeof(result)), static_cast<ssize_t>(sizeof(result)));
+  ASSERT_EQ(::close(child_result[0]), 0);
+  int status{};
+  ASSERT_EQ(::waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(static_cast<JournalError>(result), JournalError::wrong_process);
+  EXPECT_EQ(owner->size(), 0U);
+  EXPECT_EQ(owner->append(command(1, 1)), JournalError::none);
+}
+
+TEST(JournalTest, CreatesRelativePathWithoutExplicitParent) {
+  TemporaryDirectory temporary;
+  ScopedCurrentPath current_path{temporary.path()};
+
+  auto created = MmapJournal::create("commands.journal", 1U);
+
+  ASSERT_TRUE(created.has_value());
+  EXPECT_TRUE(std::filesystem::exists("commands.journal"));
+}
+
 TEST(JournalTest, RejectsInvalidCapacityAndExistingPathWithoutMutation) {
   TemporaryDirectory temporary;
   const auto path = temporary.path() / "commands.journal";
-  EXPECT_EQ(MmapJournal::create(path, 0U).error(), JournalError::invalid_capacity);
-  EXPECT_EQ(MmapJournal::create(path, kMaximumJournalCapacity + 1U).error(),
+  EXPECT_EQ(MmapJournal::create(path, 0U).error().operation, JournalError::invalid_capacity);
+  EXPECT_EQ(MmapJournal::create(path, kMaximumJournalCapacity + 1U).error().operation,
             JournalError::invalid_capacity);
   auto created = MmapJournal::create(path, 1U);
   ASSERT_TRUE(created.has_value());
-  EXPECT_EQ(MmapJournal::create(path, 1U).error(), JournalError::already_exists);
+  EXPECT_EQ(MmapJournal::create(path, 1U).error().operation, JournalError::already_exists);
 }
 
 TEST(JournalTest, RejectsSymlinkAndNonRegularFile) {
@@ -150,8 +206,8 @@ TEST(JournalTest, RejectsSymlinkAndNonRegularFile) {
   }
   const auto link = temporary.path() / "link";
   ASSERT_EQ(::symlink(target.c_str(), link.c_str()), 0);
-  EXPECT_EQ(MmapJournal::open(link).error(), JournalError::symlink);
-  EXPECT_EQ(MmapJournal::open(temporary.path()).error(), JournalError::not_regular_file);
+  EXPECT_EQ(MmapJournal::open(link).error().operation, JournalError::symlink);
+  EXPECT_EQ(MmapJournal::open(temporary.path()).error().operation, JournalError::not_regular_file);
 }
 
 TEST(JournalTest, RejectsBadPermissionsWhereEnforced) {
@@ -163,7 +219,7 @@ TEST(JournalTest, RejectsBadPermissionsWhereEnforced) {
   ASSERT_EQ(::chmod(path.c_str(), 0000), 0);
   auto opened = MmapJournal::open(path);
   if (::geteuid() != 0) {
-    EXPECT_EQ(opened.error(), JournalError::permission_denied);
+    EXPECT_EQ(opened.error().operation, JournalError::permission_denied);
   }
 }
 
@@ -177,7 +233,7 @@ TEST(JournalTest, RejectsSpecialPermissionBits) {
   struct stat status{};
   ASSERT_EQ(::stat(path.c_str(), &status), 0);
   if ((status.st_mode & 04000) != 0) {
-    EXPECT_EQ(MmapJournal::open(path).error(), JournalError::permission_denied);
+    EXPECT_EQ(MmapJournal::open(path).error().operation, JournalError::permission_denied);
   }
 }
 
@@ -189,10 +245,10 @@ TEST(JournalTest, RejectsHeaderCorruptionReservedBytesAndExactSizeMismatch) {
   ASSERT_EQ(created->close(), JournalError::none);
 
   overwrite_byte(path, kJournalHeaderReservedOffset, std::byte{1});
-  EXPECT_EQ(MmapJournal::open(path).error(), JournalError::invalid_header);
+  EXPECT_EQ(MmapJournal::open(path).error().operation, JournalError::invalid_header);
   overwrite_byte(path, kJournalHeaderReservedOffset, std::byte{0});
   ASSERT_EQ(::truncate(path.c_str(), static_cast<off_t>(kJournalHeaderSize)), 0);
-  EXPECT_EQ(MmapJournal::open(path).error(), JournalError::file_size_mismatch);
+  EXPECT_EQ(MmapJournal::open(path).error().operation, JournalError::file_size_mismatch);
 }
 
 TEST(JournalTest, ReportsCommittedPayloadBitFlipAsCorruption) {
@@ -204,7 +260,7 @@ TEST(JournalTest, ReportsCommittedPayloadBitFlipAsCorruption) {
   ASSERT_EQ(created->close(), JournalError::none);
 
   overwrite_byte(path, kJournalHeaderSize + kRecordPayloadOffset + 4U, std::byte{0xff});
-  EXPECT_EQ(MmapJournal::open(path).error(), JournalError::corrupt_record);
+  EXPECT_EQ(MmapJournal::open(path).error().operation, JournalError::corrupt_record);
 }
 
 TEST(JournalTest, RejectsCommittedNoncanonicalPayloadEvenWithValidCrc) {
@@ -217,7 +273,7 @@ TEST(JournalTest, RejectsCommittedNoncanonicalPayloadEvenWithValidCrc) {
 
   overwrite_record_byte_and_recompute_crc(
       path, 0U, static_cast<std::size_t>(kRecordPayloadOffset) + 3U, std::byte{1});
-  EXPECT_EQ(MmapJournal::open(path).error(), JournalError::corrupt_record);
+  EXPECT_EQ(MmapJournal::open(path).error().operation, JournalError::corrupt_record);
 }
 
 TEST(JournalTest, AcceptsOnlyExactZeroAsCleanEndMarker) {
@@ -247,7 +303,7 @@ TEST(JournalTest, RejectsMalformedNonzeroCommitMarker) {
   ASSERT_EQ(created->close(), JournalError::none);
 
   overwrite_byte(path, kJournalHeaderSize + kJournalRecordSize, std::byte{0});
-  EXPECT_EQ(MmapJournal::open(path).error(), JournalError::corrupt_record);
+  EXPECT_EQ(MmapJournal::open(path).error().operation, JournalError::corrupt_record);
 }
 
 TEST(JournalTest, RejectsCommittedBadSequenceLogicalTimeAndReservedBytes) {
@@ -261,19 +317,19 @@ TEST(JournalTest, RejectsCommittedBadSequenceLogicalTimeAndReservedBytes) {
 
   overwrite_record_byte_and_recompute_crc(path, 1U, static_cast<std::size_t>(kRecordSequenceOffset),
                                           std::byte{3});
-  EXPECT_EQ(MmapJournal::open(path).error(), JournalError::corrupt_record);
+  EXPECT_EQ(MmapJournal::open(path).error().operation, JournalError::corrupt_record);
 
   overwrite_record_byte_and_recompute_crc(path, 1U, static_cast<std::size_t>(kRecordSequenceOffset),
                                           std::byte{2});
   overwrite_record_byte_and_recompute_crc(
       path, 1U, static_cast<std::size_t>(kRecordLogicalTimeOffset), std::byte{4});
-  EXPECT_EQ(MmapJournal::open(path).error(), JournalError::corrupt_record);
+  EXPECT_EQ(MmapJournal::open(path).error().operation, JournalError::corrupt_record);
 
   overwrite_record_byte_and_recompute_crc(
       path, 1U, static_cast<std::size_t>(kRecordLogicalTimeOffset), std::byte{6});
   overwrite_byte(path, kJournalHeaderSize + kJournalRecordSize + kRecordReservedOffset,
                  std::byte{1});
-  EXPECT_EQ(MmapJournal::open(path).error(), JournalError::corrupt_record);
+  EXPECT_EQ(MmapJournal::open(path).error().operation, JournalError::corrupt_record);
 }
 
 TEST(JournalTest, AppendRejectsSequenceAndTimeDiscontinuityWithoutMutation) {
@@ -290,7 +346,22 @@ TEST(JournalTest, PrePublishSyncFailureIsDefinitelyUncommittedAndRetryable) {
   TemporaryDirectory temporary;
   auto created = MmapJournal::create(temporary.path() / "commands.journal", 1U);
   ASSERT_TRUE(created.has_value());
-  journal_testing::fail_next_sync(journal_testing::SyncPoint::append_pre_publish);
+  journal_testing::fail_for_journal(
+      &*created,
+      journal_testing::failure_mask(journal_testing::FailurePoint::append_pre_publish_msync));
+
+  EXPECT_EQ(created->append(command(1, 1)), JournalError::io_error);
+  EXPECT_EQ(created->size(), 0U);
+  EXPECT_EQ(created->append(command(1, 1)), JournalError::none);
+}
+
+TEST(JournalTest, PrePublishFileSyncFailureIsDefinitelyUncommittedAndRetryable) {
+  TemporaryDirectory temporary;
+  auto created = MmapJournal::create(temporary.path() / "commands.journal", 1U);
+  ASSERT_TRUE(created.has_value());
+  journal_testing::fail_for_journal(
+      &*created,
+      journal_testing::failure_mask(journal_testing::FailurePoint::append_pre_publish_fsync));
 
   EXPECT_EQ(created->append(command(1, 1)), JournalError::io_error);
   EXPECT_EQ(created->size(), 0U);
@@ -302,7 +373,9 @@ TEST(JournalTest, PostPublishSyncFailurePoisonsWriterUntilRecovery) {
   const auto path = temporary.path() / "commands.journal";
   auto created = MmapJournal::create(path, 2U);
   ASSERT_TRUE(created.has_value());
-  journal_testing::fail_next_sync(journal_testing::SyncPoint::append_post_publish);
+  journal_testing::fail_for_journal(
+      &*created,
+      journal_testing::failure_mask(journal_testing::FailurePoint::append_post_publish_msync));
 
   EXPECT_EQ(created->append(command(1, 1)), JournalError::commit_indeterminate);
   EXPECT_EQ(created->append(command(1, 1)), JournalError::writer_poisoned);
@@ -315,10 +388,41 @@ TEST(JournalTest, PostPublishSyncFailurePoisonsWriterUntilRecovery) {
   EXPECT_EQ(reopened->append(command(2, 2)), JournalError::none);
 }
 
-TEST(JournalTest, FailedCreationRemovesPathAndReportsCleanupSeparately) {
+TEST(JournalTest, PostPublishFileSyncFailurePoisonsWriterUntilRecovery) {
   TemporaryDirectory temporary;
   const auto path = temporary.path() / "commands.journal";
-  journal_testing::fail_next_sync(journal_testing::SyncPoint::create_header);
+  auto created = MmapJournal::create(path, 1U);
+  ASSERT_TRUE(created.has_value());
+  journal_testing::fail_for_journal(
+      &*created,
+      journal_testing::failure_mask(journal_testing::FailurePoint::append_post_publish_fsync));
+
+  EXPECT_EQ(created->append(command(1, 1)), JournalError::commit_indeterminate);
+  EXPECT_EQ(created->append(command(1, 1)), JournalError::writer_poisoned);
+}
+
+TEST(JournalTest, FailedCreationRemovesPathAndReportsCleanupSeparately) {
+  TemporaryDirectory temporary;
+  const std::array failures{journal_testing::FailurePoint::create_header_msync,
+                            journal_testing::FailurePoint::create_file_fsync};
+  for (std::size_t index = 0U; index < failures.size(); ++index) {
+    const auto path = temporary.path() / ("commands-" + std::to_string(index) + ".journal");
+    journal_testing::fail_for_path(path, journal_testing::failure_mask(failures[index]));
+
+    const auto created = MmapJournal::create(path, 1U);
+
+    ASSERT_FALSE(created.has_value());
+    EXPECT_EQ(created.error().operation, JournalError::io_error);
+    EXPECT_EQ(created.error().cleanup, JournalError::none);
+    EXPECT_FALSE(std::filesystem::exists(path));
+  }
+}
+
+TEST(JournalTest, ParentDirectorySyncFailureCleansUpCreatedEntry) {
+  TemporaryDirectory temporary;
+  const auto path = temporary.path() / "commands.journal";
+  journal_testing::fail_for_path(
+      path, journal_testing::failure_mask(journal_testing::FailurePoint::create_parent_fsync));
 
   const auto created = MmapJournal::create(path, 1U);
 
@@ -328,18 +432,52 @@ TEST(JournalTest, FailedCreationRemovesPathAndReportsCleanupSeparately) {
   EXPECT_FALSE(std::filesystem::exists(path));
 }
 
-TEST(JournalTest, FailedCreationPreservesPrimaryAndReportsCleanupFailure) {
+TEST(JournalTest, CreationCleanupReportsEveryFailedSyscallBranch) {
   TemporaryDirectory temporary;
-  const auto path = temporary.path() / "commands.journal";
-  journal_testing::fail_next_sync(journal_testing::SyncPoint::create_header);
-  journal_testing::fail_next_cleanup(journal_testing::CleanupPoint::unlink_created_path);
+  const std::array cleanup_failures{
+      journal_testing::FailurePoint::cleanup_munmap,
+      journal_testing::FailurePoint::cleanup_close,
+      journal_testing::FailurePoint::cleanup_unlink,
+      journal_testing::FailurePoint::cleanup_parent_fsync,
+  };
+  for (std::size_t index = 0U; index < cleanup_failures.size(); ++index) {
+    const auto path = temporary.path() / ("commands-" + std::to_string(index) + ".journal");
+    const std::uint64_t failures =
+        journal_testing::failure_mask(journal_testing::FailurePoint::create_parent_fsync) |
+        journal_testing::failure_mask(cleanup_failures[index]);
+    journal_testing::fail_for_path(path, failures);
 
-  const auto created = MmapJournal::create(path, 1U);
+    const auto created = MmapJournal::create(path, 1U);
 
-  ASSERT_FALSE(created.has_value());
-  EXPECT_EQ(created.error().operation, JournalError::io_error);
-  EXPECT_EQ(created.error().cleanup, JournalError::io_error);
-  EXPECT_TRUE(std::filesystem::exists(path));
+    ASSERT_FALSE(created.has_value());
+    EXPECT_EQ(created.error().operation, JournalError::io_error);
+    EXPECT_EQ(created.error().cleanup, JournalError::io_error);
+  }
+}
+
+TEST(JournalTest, OpenFailureMessagesExposePrimaryAndCleanup) {
+  const JournalFailureMessages messages = journal_failure_messages(
+      {.operation = JournalError::invalid_header, .cleanup = JournalError::io_error});
+
+  EXPECT_STREQ(messages.operation, "invalid journal header");
+  EXPECT_STREQ(messages.cleanup, "I/O error");
+}
+
+TEST(JournalTest, CloseReportsInjectedSyncAndCleanupFailures) {
+  TemporaryDirectory temporary;
+  const std::array failures{
+      journal_testing::FailurePoint::close_msync,
+      journal_testing::FailurePoint::close_munmap,
+      journal_testing::FailurePoint::close_file_fsync,
+      journal_testing::FailurePoint::close_file,
+  };
+  for (std::size_t index = 0U; index < failures.size(); ++index) {
+    auto created =
+        MmapJournal::create(temporary.path() / ("close-" + std::to_string(index) + ".journal"), 1U);
+    ASSERT_TRUE(created.has_value());
+    journal_testing::fail_for_journal(&*created, journal_testing::failure_mask(failures[index]));
+    EXPECT_EQ(created->close(), JournalError::io_error);
+  }
 }
 
 TEST(JournalTest, EndToEndAppendBeforeApplyReplaysIdentically) {

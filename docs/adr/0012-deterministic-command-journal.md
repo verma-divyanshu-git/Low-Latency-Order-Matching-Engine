@@ -29,6 +29,8 @@ Recovery scans contiguous records and stops only at an exact zero marker while t
 
 Applications must append successfully before applying the command.
 The journal permits one writer in one process and thread and retains a nonblocking advisory exclusive file lock for its open lifetime.
+It also retains the opener process ID because advisory lock ownership is inherited across `fork`; inherited children cannot append.
+Successful creation synchronizes both initialized file contents and the containing directory entry.
 
 ## Consequences
 
@@ -45,6 +47,7 @@ No rollback write is used to claim that an uncertain commit is absent.
 Mode `0600` including special-bit rejection, regular-file checks, exclusive creation, close-on-exec, no-follow opening, and advisory ownership locking reduce local file hazards.
 They do not replace directory permissions or host access control.
 Advisory locks exclude cooperating opens but cannot prevent access by software that ignores them.
+Failed creation cleanup reports its own status separately and requests a second directory synchronization after unlink.
 
 There is no snapshot, compaction, rotation, replication, authentication, or automatic corruption repair in this phase.
 Those capabilities must preserve this log's ordering and corruption policy if added.

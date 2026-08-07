@@ -27,7 +27,8 @@ It rejects decreasing logical time, invalid payloads, and sequence exhaustion wi
 `SequencedEngine::apply` validates the command and preflights caller event capacity before mutating the book.
 Limit and market submissions provide one result slot plus the book's maximum live-order capacity because each maker can produce one trade.
 A valid replacement first removes its resting order, so its exact worst-case total is the arena capacity: one result plus at most capacity minus one trades.
-An invalid replacement needs only its single rejection result.
+Shared nonmutating `OrderBook` preflight checks let invalid handle, zero or excessive quantity, and out-of-domain replacement price use only their single rejection result.
+The same preflight path gives known limit, market, FOK, and full-arena rejections one result slot without duplicating matcher validation rules.
 With a zero-capacity arena, every command needs one result slot.
 Cancel and amend callers provide one result slot.
 The engine owns its fixed trade scratch storage from construction, so `apply` performs no allocation.
@@ -69,6 +70,9 @@ Capacity is fixed at creation from 1 through 1,000,000 records.
 The maximum file size is 80,000,064 bytes.
 Creation uses exclusive creation, mode `0600`, close-on-exec, and no-follow behavior where the platform supplies it.
 Only regular files with exact mode `0600`, including no set-user-ID, set-group-ID, or sticky bits, exact size, and a valid canonical header are accepted.
+After synchronizing the initialized mapping and file, creation opens and synchronizes the parent directory before reporting success so the directory entry is included in the durability request.
+A relative path without an explicit parent uses `.`, while an absolute path directly below root uses `/`.
+Directory descriptors use close-on-exec, directory-only opening where available, and no-follow behavior for the final parent component where available.
 The implementation supports macOS and Linux.
 
 ## Append, recovery, and durability
@@ -97,6 +101,9 @@ The journal has one writer owned by one process and one thread.
 Create and open acquire a nonblocking exclusive `flock` that remains attached to the journal file descriptor for its lifetime.
 The lock is advisory: cooperating processes using this API are excluded, but unrelated software can ignore advisory locks and access the file.
 Separate opens in the same process are also rejected while the owner remains open.
+Because `flock` ownership is inherited across `fork`, each journal also retains its creator or opener process ID.
+An inherited child receives `wrong_process` before `append` can touch mapped bytes or journal state, while the parent remains able to append.
+A child may close its local inherited mapping and descriptor, but that path performs no synchronization on behalf of the parent.
 There is no concurrent append support.
 Indexed reads return decoded command values, not views into the mapping.
 
@@ -107,5 +114,7 @@ Do not rewrite, skip, or guess past corruption.
 Protect the containing directory as well as the `0600` file.
 Capacity exhaustion is explicit and requires planned rotation in a future snapshot and compaction phase.
 Create and open errors report the primary operation failure separately from cleanup failure.
+`journal_failure_messages` returns both messages, including an explicit `none` cleanup message, so callers do not silently discard cleanup status.
 Failed creation attempts unmap, close, and unlink in order, checking each result.
+After unlink, cleanup attempts another parent-directory synchronization so removal is made durable where the platform and filesystem honor the request.
 If cleanup itself fails, the caller receives that fact explicitly and must inspect or remove any remaining path rather than assuming cleanup succeeded.

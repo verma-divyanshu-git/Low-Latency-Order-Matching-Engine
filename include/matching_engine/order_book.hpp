@@ -169,6 +169,11 @@ public:
   [[nodiscard]] AmendResult amend_quantity(Handle handle, Quantity new_remaining) noexcept;
   [[nodiscard]] SubmitResult replace(Handle handle, Price new_price, Quantity new_quantity,
                                      std::span<Trade> trades) noexcept;
+  [[nodiscard]] RejectReason preflight_limit(Side side, Price price, Quantity quantity,
+                                             TimeInForce time_in_force) const noexcept;
+  [[nodiscard]] RejectReason preflight_market(Side side, Quantity quantity) const noexcept;
+  [[nodiscard]] RejectReason preflight_replace(Handle handle, Price new_price,
+                                               Quantity new_quantity) const noexcept;
 
   [[nodiscard]] std::optional<Price> best_bid() const noexcept;
   [[nodiscard]] std::optional<Price> best_ask() const noexcept;
@@ -180,8 +185,7 @@ public:
 private:
   [[nodiscard]] static PriceDomain checked_domain(PriceDomain domain);
   [[nodiscard]] static std::uint32_t checked_max_quantity(Quantity quantity);
-  [[nodiscard]] SubmitResult validate(Side side, Quantity quantity,
-                                      std::span<Trade> trades) const noexcept;
+  [[nodiscard]] RejectReason preflight(Side side, Quantity quantity) const noexcept;
   [[nodiscard]] bool can_fully_fill(Side side, std::uint32_t limit_index,
                                     std::uint64_t quantity) const noexcept;
   [[nodiscard]] std::optional<std::uint32_t> next_level(Side side,

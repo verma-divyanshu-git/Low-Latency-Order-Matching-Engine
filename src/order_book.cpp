@@ -84,21 +84,59 @@ std::uint32_t OrderBook::checked_max_quantity(Quantity quantity) {
   return static_cast<std::uint32_t>(quantity.value());
 }
 
-SubmitResult OrderBook::validate(Side side, Quantity quantity,
-                                 std::span<Trade> trades) const noexcept {
+RejectReason OrderBook::preflight(Side side, Quantity quantity) const noexcept {
   if (!is_valid_side(side)) {
-    return rejected(RejectReason::invalid_side, quantity);
+    return RejectReason::invalid_side;
   }
   if (quantity.value() == 0U) {
-    return rejected(RejectReason::zero_quantity, quantity);
+    return RejectReason::zero_quantity;
   }
   if (quantity.value() > max_order_quantity_) {
-    return rejected(RejectReason::quantity_too_large, quantity);
+    return RejectReason::quantity_too_large;
   }
-  if (trades.size() < required_trade_capacity()) {
-    return rejected(RejectReason::insufficient_trade_capacity, quantity);
+  return RejectReason::none;
+}
+
+RejectReason OrderBook::preflight_limit(Side side, Price price, Quantity quantity,
+                                        TimeInForce time_in_force) const noexcept {
+  if (!is_valid_time_in_force(time_in_force)) {
+    return RejectReason::invalid_time_in_force;
   }
-  return rejected(RejectReason::none, quantity);
+  const RejectReason basic = preflight(side, quantity);
+  if (basic != RejectReason::none) {
+    return basic;
+  }
+  const auto level_index = domain_.index_of(price);
+  if (!level_index.has_value()) {
+    return RejectReason::price_out_of_domain;
+  }
+  if (time_in_force == TimeInForce::fok && !can_fully_fill(side, *level_index, quantity.value())) {
+    return RejectReason::fok_not_fillable;
+  }
+  if (time_in_force == TimeInForce::gtc && arena_.size() == arena_.capacity() &&
+      !has_crossing_order(side, *level_index)) {
+    return RejectReason::order_capacity_exhausted;
+  }
+  return RejectReason::none;
+}
+
+RejectReason OrderBook::preflight_market(Side side, Quantity quantity) const noexcept {
+  return preflight(side, quantity);
+}
+
+RejectReason OrderBook::preflight_replace(Handle handle, Price new_price,
+                                          Quantity new_quantity) const noexcept {
+  const Order* const order = arena_.resolve(handle);
+  if (order == nullptr) {
+    return RejectReason::invalid_handle;
+  }
+  const RejectReason basic =
+      preflight(detail::decode_side(order->encoded_level_side), new_quantity);
+  if (basic != RejectReason::none) {
+    return basic;
+  }
+  return domain_.index_of(new_price).has_value() ? RejectReason::none
+                                                 : RejectReason::price_out_of_domain;
 }
 
 SubmitResult OrderBook::submit_limit(OrderId id, Side side, Price price, Quantity quantity,
@@ -111,27 +149,24 @@ SubmitResult OrderBook::submit_limit(OrderId id, Side side, Price price, Quantit
   if (!is_valid_time_in_force(time_in_force)) {
     return rejected(RejectReason::invalid_time_in_force, quantity);
   }
-  const SubmitResult validation = validate(side, quantity, trades);
-  if (validation.reject_reason != RejectReason::none) {
-    return validation;
+  const RejectReason basic = preflight(side, quantity);
+  if (basic != RejectReason::none) {
+    return rejected(basic, quantity);
   }
-  const auto level_index = domain_.index_of(price);
-  if (!level_index.has_value()) {
-    return rejected(RejectReason::price_out_of_domain, quantity);
+  if (trades.size() < required_trade_capacity()) {
+    return rejected(RejectReason::insufficient_trade_capacity, quantity);
   }
-  if (time_in_force == TimeInForce::fok && !can_fully_fill(side, *level_index, quantity.value())) {
-    return rejected(RejectReason::fok_not_fillable, quantity);
+  const RejectReason preflight_result = preflight_limit(side, price, quantity, time_in_force);
+  if (preflight_result != RejectReason::none) {
+    return rejected(preflight_result, quantity);
   }
-  if (time_in_force == TimeInForce::gtc && arena_.size() == arena_.capacity() &&
-      !has_crossing_order(side, *level_index)) {
-    return rejected(RejectReason::order_capacity_exhausted, quantity);
-  }
+  const std::uint32_t level_index = *domain_.index_of(price);
 
   std::uint64_t remaining = quantity.value();
   std::uint32_t trade_count = 0U;
   match(id, side, level_index, remaining, trades, trade_count);
   const bool should_rest = time_in_force == TimeInForce::gtc && remaining != 0U;
-  const Handle handle = should_rest ? rest(id, side, *level_index, remaining) : kInvalidHandle;
+  const Handle handle = should_rest ? rest(id, side, level_index, remaining) : kInvalidHandle;
   return {.reject_reason = RejectReason::none,
           .executed_quantity = Quantity{quantity.value() - remaining},
           .unfilled_quantity = Quantity{remaining},
@@ -170,9 +205,12 @@ std::optional<std::uint32_t> OrderBook::next_level(Side side,
 
 SubmitResult OrderBook::submit_market(OrderId id, Side side, Quantity quantity,
                                       std::span<Trade> trades) noexcept {
-  const SubmitResult validation = validate(side, quantity, trades);
-  if (validation.reject_reason != RejectReason::none) {
-    return validation;
+  const RejectReason basic = preflight_market(side, quantity);
+  if (basic != RejectReason::none) {
+    return rejected(basic, quantity);
+  }
+  if (trades.size() < required_trade_capacity()) {
+    return rejected(RejectReason::insufficient_trade_capacity, quantity);
   }
 
   std::uint64_t remaining = quantity.value();
@@ -293,20 +331,21 @@ AmendResult OrderBook::amend_quantity(Handle handle, Quantity new_remaining) noe
 
 SubmitResult OrderBook::replace(Handle handle, Price new_price, Quantity new_quantity,
                                 std::span<Trade> trades) noexcept {
-  const Order* order = arena_.resolve(handle);
-  if (order == nullptr) {
-    return rejected(RejectReason::invalid_handle, new_quantity);
+  const RejectReason preflight_result = preflight_replace(handle, new_price, new_quantity);
+  if (preflight_result != RejectReason::none &&
+      preflight_result != RejectReason::price_out_of_domain) {
+    return rejected(preflight_result, new_quantity);
   }
-  const Side side = detail::decode_side(order->encoded_level_side);
-  const SubmitResult validation = validate(side, new_quantity, trades);
-  if (validation.reject_reason != RejectReason::none) {
-    return validation;
+  if (trades.size() < required_trade_capacity()) {
+    return rejected(RejectReason::insufficient_trade_capacity, new_quantity);
   }
-  if (!domain_.index_of(new_price).has_value()) {
-    return rejected(RejectReason::price_out_of_domain, new_quantity);
+  if (preflight_result != RejectReason::none) {
+    return rejected(preflight_result, new_quantity);
   }
 
+  const Order* const order = arena_.resolve(handle);
   const OrderId id = order->id;
+  const Side side = detail::decode_side(order->encoded_level_side);
   const std::uint64_t old_remaining = order->remaining.value();
   unlink(handle, old_remaining);
   return submit_limit(id, side, new_price, new_quantity, TimeInForce::gtc, trades);

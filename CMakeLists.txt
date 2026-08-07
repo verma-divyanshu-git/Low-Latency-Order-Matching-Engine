@@ -132,13 +132,20 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
   include(GoogleTest)
   gtest_discover_tests(matching_engine_core_tests)
 
-  add_executable(matching_engine_persistence_tests tests/journal_test.cpp)
+  add_library(matching_engine_persistence_test STATIC src/journal.cpp)
+  target_include_directories(
+    matching_engine_persistence_test
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
   target_compile_definitions(
-    matching_engine_persistence PRIVATE MATCHING_ENGINE_TEST_FAILPOINTS)
+    matching_engine_persistence_test PRIVATE MATCHING_ENGINE_TEST_FAILPOINTS)
+  target_link_libraries(matching_engine_persistence_test PUBLIC matching_engine::core)
+  engine_configure_target(matching_engine_persistence_test)
+
+  add_executable(matching_engine_persistence_tests tests/journal_test.cpp)
   target_compile_definitions(
     matching_engine_persistence_tests PRIVATE MATCHING_ENGINE_TEST_FAILPOINTS)
   target_link_libraries(
-    matching_engine_persistence_tests PRIVATE matching_engine::persistence GTest::gtest_main)
+    matching_engine_persistence_tests PRIVATE matching_engine_persistence_test GTest::gtest_main)
   engine_configure_target(matching_engine_persistence_tests)
   gtest_discover_tests(matching_engine_persistence_tests)
 

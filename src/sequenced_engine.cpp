@@ -36,13 +36,23 @@ SequencedEngine::SequencedEngine(PriceDomain domain, std::size_t max_orders,
 std::size_t SequencedEngine::maximum_event_count(const CommandPayload& payload) const noexcept {
   switch (payload.tag) {
   case CommandType::submit_limit:
+    return order_book_.preflight_limit(payload.side, Price{payload.price_ticks},
+                                       Quantity{payload.quantity},
+                                       payload.time_in_force) == RejectReason::none
+               ? trade_capacity_ + 1U
+               : 1U;
   case CommandType::submit_market:
-    return trade_capacity_ + 1U;
-  case CommandType::replace: {
-    const Handle handle{payload.handle_index, payload.handle_generation};
-    return order_book_.order_info(handle).has_value() ? std::max<std::size_t>(trade_capacity_, 1U)
-                                                      : 1U;
-  }
+    return order_book_.preflight_market(payload.side, Quantity{payload.quantity}) ==
+                   RejectReason::none
+               ? trade_capacity_ + 1U
+               : 1U;
+  case CommandType::replace:
+    if (order_book_.preflight_replace(Handle{payload.handle_index, payload.handle_generation},
+                                      Price{payload.price_ticks},
+                                      Quantity{payload.quantity}) != RejectReason::none) {
+      return 1U;
+    }
+    return std::max<std::size_t>(trade_capacity_, 1U);
   case CommandType::cancel:
   case CommandType::amend_quantity:
     return 1U;

@@ -41,6 +41,7 @@ enum class JournalError : std::uint8_t {
   locked,
   commit_indeterminate,
   writer_poisoned,
+  wrong_process,
   corrupt_record,
   full,
   invalid_command,
@@ -50,6 +51,11 @@ enum class JournalError : std::uint8_t {
   closed,
 };
 
+struct JournalFailureMessages {
+  const char* operation;
+  const char* cleanup;
+};
+
 struct JournalOpenFailure {
   JournalError operation{JournalError::none};
   JournalError cleanup{JournalError::none};
@@ -57,29 +63,37 @@ struct JournalOpenFailure {
   constexpr bool operator==(const JournalOpenFailure&) const noexcept = default;
 };
 
-[[nodiscard]] constexpr bool operator==(JournalOpenFailure failure, JournalError error) noexcept {
-  return failure.operation == error;
-}
-
 [[nodiscard]] const char* journal_error_message(JournalError error) noexcept;
-[[nodiscard]] const char* journal_error_message(JournalOpenFailure failure) noexcept;
+[[nodiscard]] JournalFailureMessages journal_failure_messages(JournalOpenFailure failure) noexcept;
 [[nodiscard]] std::uint32_t crc32c(std::span<const std::byte> bytes) noexcept;
 
 #if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
 namespace journal_testing {
 
-enum class SyncPoint : std::uint8_t {
-  create_header,
-  append_pre_publish,
-  append_post_publish,
+enum class FailurePoint : std::uint8_t {
+  create_header_msync,
+  create_file_fsync,
+  create_parent_fsync,
+  append_pre_publish_msync,
+  append_pre_publish_fsync,
+  append_post_publish_msync,
+  append_post_publish_fsync,
+  cleanup_munmap,
+  cleanup_close,
+  cleanup_unlink,
+  cleanup_parent_fsync,
+  close_msync,
+  close_munmap,
+  close_file_fsync,
+  close_file,
 };
 
-enum class CleanupPoint : std::uint8_t {
-  unlink_created_path,
-};
+[[nodiscard]] constexpr std::uint64_t failure_mask(FailurePoint point) noexcept {
+  return std::uint64_t{1U} << static_cast<std::uint8_t>(point);
+}
 
-void fail_next_sync(SyncPoint point) noexcept;
-void fail_next_cleanup(CleanupPoint point) noexcept;
+void fail_for_path(const std::filesystem::path& path, std::uint64_t failures) noexcept;
+void fail_for_journal(const void* identity, std::uint64_t failures) noexcept;
 
 } // namespace journal_testing
 #endif
@@ -122,6 +136,7 @@ private:
   std::uint64_t capacity_{};
   std::uint64_t size_{};
   std::uint64_t last_logical_time_{};
+  std::int64_t owner_pid_{};
   bool writer_poisoned_{};
 };
 
