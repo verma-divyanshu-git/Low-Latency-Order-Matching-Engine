@@ -17,6 +17,8 @@ Phase 2B adds generation-validated live order inspection and an independent stan
 Ten fixed seeds exercise 10,000 normal differential operations, with additional labeled high-cancel and volatility-shock synthetic stress workloads.
 Structure-aware libFuzzer testing compares bounded public-operation sequences with that reference model and checks structural invariants after every operation.
 This increases defensive test coverage but does not prove correctness or imply that fuzzing has discovered a bug.
+Phase 3A adds a benchmark-only portable clock library and startup self-check that can refuse unresolved measurements.
+It provides measurement infrastructure only and does not benchmark the matching engine.
 Gateway sequencing and process-boundary interfaces are not implemented yet.
 No latency or throughput claims should be inferred from this repository.
 
@@ -53,6 +55,7 @@ Those tools can be appropriate at process boundaries and on control-plane paths,
 Transport adapters may be considered later without becoming part of the matching core.
 
 Measurement rules are defined before publishing numbers in [ADR-0002](docs/adr/0002-measurement-contract.md).
+Clock selection and refusal behavior are documented in [the measurement guide](docs/measurement.md) and [ADR-0009](docs/adr/0009-portable-benchmark-clock.md).
 
 ## Build
 
@@ -73,6 +76,9 @@ The `fuzz` preset requires an upstream Clang distribution with working libFuzzer
 On Apple silicon, the preset checks `/opt/homebrew/opt/llvm/bin` before the inherited `PATH` so a Homebrew LLVM installation is selected.
 Configuration compiles and links a fuzz harness probe and fails with a precise error when the required runtimes are unavailable.
 Under this preset, `engine_configure_target()` uses `fuzzer-no-link`, while an executable fuzz harness must use `engine_configure_fuzz_target()` to link the libFuzzer runtime.
+The `measurement` preset builds and tests the separate `matching_engine::measurement` library and `clock_probe` executable in Release mode.
+Run `./build/measurement/clock_probe --samples 10000 --calibration-ms 10` to emit the startup self-check JSON.
+The core target does not link measurement code, and `ENGINE_BUILD_BENCHMARKS` defaults to `OFF`.
 
 ## Benchmark contract
 
@@ -108,6 +114,7 @@ Future benchmark reports will:
 - [Architecture decision records](docs/adr/README.md)
 - [Differential testing and replay](docs/differential-testing.md)
 - [Order book fuzzing](docs/fuzzing.md)
+- [Measurement clock self-check](docs/measurement.md)
 - [Primary references](docs/references.md)
 - [Security policy](SECURITY.md)
 

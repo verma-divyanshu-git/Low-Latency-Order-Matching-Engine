@@ -24,6 +24,20 @@ else()
   set(ENGINE_BUILD_TESTS_DEFAULT OFF)
 endif()
 option(ENGINE_BUILD_TESTS "Build matching engine tests" ${ENGINE_BUILD_TESTS_DEFAULT})
+option(ENGINE_BUILD_BENCHMARKS "Build measurement tools and benchmarks" OFF)
+
+if(ENGINE_BUILD_BENCHMARKS)
+  add_library(matching_engine_measurement STATIC src/clock_probe_cli.cpp src/measurement.cpp)
+  add_library(matching_engine::measurement ALIAS matching_engine_measurement)
+  target_include_directories(
+    matching_engine_measurement
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  engine_configure_target(matching_engine_measurement)
+
+  add_executable(clock_probe src/clock_probe.cpp)
+  target_link_libraries(clock_probe PRIVATE matching_engine::measurement)
+  engine_configure_target(clock_probe)
+endif()
 
 if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
   include(FetchContent)
@@ -47,6 +61,17 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
 
   include(GoogleTest)
   gtest_discover_tests(matching_engine_core_tests)
+
+  if(ENGINE_BUILD_BENCHMARKS)
+    add_executable(
+      matching_engine_measurement_tests
+      tests/clock_probe_cli_test.cpp tests/measurement_test.cpp)
+    target_link_libraries(
+      matching_engine_measurement_tests
+      PRIVATE matching_engine::measurement GTest::gtest_main)
+    engine_configure_target(matching_engine_measurement_tests)
+    gtest_discover_tests(matching_engine_measurement_tests)
+  endif()
 endif()
 
 if(ENGINE_ENABLE_FUZZING)

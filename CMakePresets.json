@@ -63,6 +63,16 @@
         "CMAKE_CXX_COMPILER": "clang++",
         "ENGINE_ENABLE_FUZZING": "ON"
       }
+    },
+    {
+      "name": "measurement",
+      "displayName": "Release measurement tools",
+      "inherits": "release",
+      "cacheVariables": {
+        "BUILD_TESTING": "ON",
+        "ENGINE_BUILD_TESTS": "ON",
+        "ENGINE_BUILD_BENCHMARKS": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -89,6 +99,10 @@
     {
       "name": "fuzz",
       "configurePreset": "fuzz"
+    },
+    {
+      "name": "measurement",
+      "configurePreset": "measurement"
     }
   ],
   "testPresets": [
@@ -130,6 +144,13 @@
     {
       "name": "fuzz",
       "configurePreset": "fuzz",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "measurement",
+      "configurePreset": "measurement",
       "output": {
         "outputOnFailure": true
       }
