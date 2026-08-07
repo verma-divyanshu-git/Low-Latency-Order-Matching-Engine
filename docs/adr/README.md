@@ -16,3 +16,4 @@ A new record supersedes a decision when the architecture changes.
 - [ADR-0007: Allocation-free structural invariant diagnostics](0007-allocation-free-structural-invariant-diagnostics.md)
 - [ADR-0008: Structure-aware differential fuzzing](0008-structure-aware-differential-fuzzing.md)
 - [ADR-0009: Portable benchmark clock and startup self-check](0009-portable-benchmark-clock.md)
+- [ADR-0010: Open-loop order-book benchmark contract](0010-open-loop-benchmark-contract.md)

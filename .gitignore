@@ -1,5 +1,6 @@
 /build/
 /out/
+/benchmark-results/
 
 .cache/
 .clangd/
@@ -8,4 +9,5 @@
 *.dSYM/
 *.profraw
 *.profdata
+__pycache__/
 compile_commands.json

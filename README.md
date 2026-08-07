@@ -18,7 +18,7 @@ Ten fixed seeds exercise 10,000 normal differential operations, with additional 
 Structure-aware libFuzzer testing compares bounded public-operation sequences with that reference model and checks structural invariants after every operation.
 This increases defensive test coverage but does not prove correctness or imply that fuzzing has discovered a bug.
 Phase 3A adds a benchmark-only portable clock library and startup self-check that can refuse unresolved measurements.
-It provides measurement infrastructure only and does not benchmark the matching engine.
+Phase 3B adds a benchmark-only open-loop order-book harness, raw HdrHistogram artifacts, explicit rate sweeps, and a separate synthetic coordinated-omission diagnostic.
 Steady-clock fallback can pass clock safety for local regression use but is always marked non-publishable.
 Gateway sequencing and process-boundary interfaces are not implemented yet.
 No latency or throughput claims should be inferred from this repository.
@@ -77,9 +77,10 @@ The `fuzz` preset requires an upstream Clang distribution with working libFuzzer
 On Apple silicon, the preset checks `/opt/homebrew/opt/llvm/bin` before the inherited `PATH` so a Homebrew LLVM installation is selected.
 Configuration compiles and links a fuzz harness probe and fails with a precise error when the required runtimes are unavailable.
 Under this preset, `engine_configure_target()` uses `fuzzer-no-link`, while an executable fuzz harness must use `engine_configure_fuzz_target()` to link the libFuzzer runtime.
-The `measurement` preset builds and tests the separate `matching_engine::measurement` library and `clock_probe` executable in Release mode.
+The `measurement` preset builds and tests the separate measurement and benchmark libraries, `clock_probe`, and `order_book_benchmark` in Release mode.
 Run `./build/measurement/clock_probe --samples 10000 --calibration-ms 10` to emit the startup self-check JSON.
 The JSON separates `clock_safe` from `operation_percentiles_publishable`; a zero exit status does not imply publishable latency evidence.
+The [benchmarking guide](docs/benchmarking.md) defines open-loop scheduling, workloads, artifacts, diagnostics, and reproduction commands.
 The core target does not link measurement code, and `ENGINE_BUILD_BENCHMARKS` defaults to `OFF`.
 
 ## Benchmark contract
@@ -117,6 +118,7 @@ Future benchmark reports will:
 - [Differential testing and replay](docs/differential-testing.md)
 - [Order book fuzzing](docs/fuzzing.md)
 - [Measurement clock self-check](docs/measurement.md)
+- [Order-book benchmarking methodology](docs/benchmarking.md)
 - [Primary references](docs/references.md)
 - [Security policy](SECURITY.md)
 
