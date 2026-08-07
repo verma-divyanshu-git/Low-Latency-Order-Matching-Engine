@@ -13,6 +13,8 @@ namespace {
 
 static_assert(std::is_trivially_copyable_v<Trade>);
 static_assert(std::is_trivially_copyable_v<SubmitResult>);
+static_assert(std::is_trivially_copyable_v<CancelResult>);
+static_assert(std::is_trivially_copyable_v<AmendResult>);
 static_assert(noexcept(std::declval<OrderBook&>().submit_limit(OrderId{1}, Side::buy, Price{1},
                                                                Quantity{1},
                                                                std::declval<std::span<Trade>>())));
@@ -32,6 +34,11 @@ public:
   [[nodiscard]] SubmitResult limit(std::uint64_t id, Side side, std::int64_t price,
                                    std::uint64_t quantity) {
     return book.submit_limit(OrderId{id}, side, Price{price}, Quantity{quantity}, trades);
+  }
+
+  [[nodiscard]] SubmitResult limit(std::uint64_t id, Side side, std::int64_t price,
+                                   std::uint64_t quantity, TimeInForce tif) {
+    return book.submit_limit(OrderId{id}, side, Price{price}, Quantity{quantity}, tif, trades);
   }
 
   [[nodiscard]] SubmitResult market(std::uint64_t id, Side side, std::uint64_t quantity) {
@@ -377,6 +384,245 @@ TEST_F(OrderBookTest, DeterministicMixedOperationsPreservePriorityAndAggregates)
     return;
   }
   EXPECT_LT(bid.value(), ask.value());
+}
+
+TEST_F(OrderBookTest, IocReportsPartialNoFillAndFullFillWithoutRestingResidual) {
+  ASSERT_EQ(limit(10, Side::sell, 104, 3).reject_reason, RejectReason::none);
+  ASSERT_EQ(limit(11, Side::sell, 105, 2).reject_reason, RejectReason::none);
+
+  const SubmitResult partial = limit(20, Side::buy, 104, 5, TimeInForce::ioc);
+  expect_result(partial, RejectReason::none, 3, 2, 1);
+  EXPECT_EQ(trades[0], (Trade{OrderId{20}, OrderId{10}, Price{104}, Quantity{3}}));
+  EXPECT_EQ(book.best_bid(), std::nullopt);
+  EXPECT_EQ(book.best_ask(), Price{105});
+
+  const SubmitResult no_fill = limit(21, Side::buy, 103, 4, TimeInForce::ioc);
+  expect_result(no_fill, RejectReason::none, 0, 4, 0);
+  EXPECT_EQ(book.best_bid(), std::nullopt);
+
+  const SubmitResult full = limit(22, Side::buy, 105, 2, TimeInForce::ioc);
+  expect_result(full, RejectReason::none, 2, 0, 1);
+  EXPECT_EQ(trades[0], (Trade{OrderId{22}, OrderId{11}, Price{105}, Quantity{2}}));
+  EXPECT_EQ(book.best_ask(), std::nullopt);
+}
+
+TEST_F(OrderBookTest, FokInsufficientAcrossLevelsLeavesBookAndTradesUnchanged) {
+  const SubmitResult first = limit(10, Side::sell, 103, 2);
+  const SubmitResult second = limit(11, Side::sell, 105, 3);
+  ASSERT_EQ(first.reject_reason, RejectReason::none);
+  ASSERT_EQ(second.reject_reason, RejectReason::none);
+  trades.fill(Trade{OrderId{91}, OrderId{92}, Price{109}, Quantity{93}});
+  const auto before = trades;
+
+  const SubmitResult one_level = limit(20, Side::buy, 103, 3, TimeInForce::fok);
+  expect_result(one_level, RejectReason::fok_not_fillable, 0, 3, 0);
+  EXPECT_EQ(trades, before);
+  expect_level(book, Side::sell, 103, 2, 1);
+
+  const SubmitResult multiple_levels = limit(21, Side::buy, 105, 6, TimeInForce::fok);
+  expect_result(multiple_levels, RejectReason::fok_not_fillable, 0, 6, 0);
+  EXPECT_EQ(trades, before);
+  EXPECT_EQ(book.best_ask(), Price{103});
+  expect_level(book, Side::sell, 103, 2, 1);
+  expect_level(book, Side::sell, 105, 3, 1);
+  EXPECT_EQ(book.cancel(first.resting_handle).reject_reason, CancelReason::none);
+  EXPECT_EQ(book.cancel(second.resting_handle).reject_reason, CancelReason::none);
+}
+
+TEST_F(OrderBookTest, FokExactFillAcrossLevelsUsesPriceThenFifoPriority) {
+  ASSERT_EQ(limit(10, Side::sell, 103, 2).reject_reason, RejectReason::none);
+  ASSERT_EQ(limit(11, Side::sell, 104, 3).reject_reason, RejectReason::none);
+  ASSERT_EQ(limit(12, Side::sell, 104, 4).reject_reason, RejectReason::none);
+
+  const SubmitResult result = limit(20, Side::buy, 104, 9, TimeInForce::fok);
+
+  expect_result(result, RejectReason::none, 9, 0, 3);
+  EXPECT_EQ(trades[0], (Trade{OrderId{20}, OrderId{10}, Price{103}, Quantity{2}}));
+  EXPECT_EQ(trades[1], (Trade{OrderId{20}, OrderId{11}, Price{104}, Quantity{3}}));
+  EXPECT_EQ(trades[2], (Trade{OrderId{20}, OrderId{12}, Price{104}, Quantity{4}}));
+  EXPECT_EQ(book.best_ask(), std::nullopt);
+  EXPECT_EQ(book.best_bid(), std::nullopt);
+}
+
+TEST_F(OrderBookTest, InvalidTimeInForceRejectsBeforeMutation) {
+  const SubmitResult maker = limit(10, Side::sell, 104, 4);
+  ASSERT_EQ(maker.reject_reason, RejectReason::none);
+  const TimeInForce invalid =
+      static_cast<TimeInForce>(255U); // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange)
+
+  const SubmitResult result = limit(20, Side::buy, 104, 2, invalid);
+
+  expect_result(result, RejectReason::invalid_time_in_force, 0, 2, 0);
+  expect_level(book, Side::sell, 104, 4, 1);
+  EXPECT_EQ(book.cancel(maker.resting_handle).reject_reason, CancelReason::none);
+}
+
+TEST(OrderBookCapacityTest, FullArenaDoesNotBlockIocOrFok) {
+  OrderBook book{PriceDomain{Price{1}, 4U}, 1U, Quantity{10}};
+  std::array<Trade, 1> trades{};
+  ASSERT_EQ(book.submit_limit(OrderId{1}, Side::sell, Price{2}, Quantity{4}, trades).reject_reason,
+            RejectReason::none);
+
+  const SubmitResult ioc =
+      book.submit_limit(OrderId{2}, Side::buy, Price{1}, Quantity{2}, TimeInForce::ioc, trades);
+  OrderBookTest::expect_result(ioc, RejectReason::none, 0, 2, 0);
+
+  const SubmitResult fok =
+      book.submit_limit(OrderId{3}, Side::buy, Price{2}, Quantity{4}, TimeInForce::fok, trades);
+  OrderBookTest::expect_result(fok, RejectReason::none, 4, 0, 1);
+  EXPECT_EQ(trades[0], (Trade{OrderId{3}, OrderId{1}, Price{2}, Quantity{4}}));
+}
+
+TEST_F(OrderBookTest, CancelUnlinksOnlyHeadMiddleAndTailAndUpdatesAggregates) {
+  const SubmitResult first = limit(1, Side::buy, 104, 1);
+  const SubmitResult middle = limit(2, Side::buy, 104, 2);
+  const SubmitResult third = limit(3, Side::buy, 104, 3);
+  const SubmitResult tail = limit(4, Side::buy, 104, 4);
+  ASSERT_EQ(first.reject_reason, RejectReason::none);
+  ASSERT_EQ(middle.reject_reason, RejectReason::none);
+  ASSERT_EQ(third.reject_reason, RejectReason::none);
+  ASSERT_EQ(tail.reject_reason, RejectReason::none);
+
+  const CancelResult tail_cancel = book.cancel(tail.resting_handle);
+  EXPECT_EQ(tail_cancel, (CancelResult{CancelReason::none, OrderId{4}, Quantity{4}}));
+  expect_level(book, Side::buy, 104, 6, 3);
+
+  const CancelResult middle_cancel = book.cancel(middle.resting_handle);
+  EXPECT_EQ(middle_cancel, (CancelResult{CancelReason::none, OrderId{2}, Quantity{2}}));
+  expect_level(book, Side::buy, 104, 4, 2);
+
+  const CancelResult head_cancel = book.cancel(first.resting_handle);
+  EXPECT_EQ(head_cancel, (CancelResult{CancelReason::none, OrderId{1}, Quantity{1}}));
+  expect_level(book, Side::buy, 104, 3, 1);
+
+  const CancelResult only_cancel = book.cancel(third.resting_handle);
+  EXPECT_EQ(only_cancel, (CancelResult{CancelReason::none, OrderId{3}, Quantity{3}}));
+  expect_level(book, Side::buy, 104, 0, 0);
+  EXPECT_EQ(book.best_bid(), std::nullopt);
+
+  const SubmitResult ask = limit(5, Side::sell, 106, 2);
+  ASSERT_EQ(ask.reject_reason, RejectReason::none);
+  EXPECT_EQ(book.cancel(ask.resting_handle).reject_reason, CancelReason::none);
+  EXPECT_EQ(book.best_ask(), std::nullopt);
+}
+
+TEST_F(OrderBookTest, CancelRejectsInvalidHandlesAndReusesFreedGeneration) {
+  const SubmitResult order = limit(1, Side::buy, 104, 5);
+  ASSERT_EQ(order.reject_reason, RejectReason::none);
+  EXPECT_EQ(book.cancel(order.resting_handle).reject_reason, CancelReason::none);
+  const auto unchanged = book.level_info(Side::buy, Price{104});
+
+  EXPECT_EQ(book.cancel(order.resting_handle),
+            (CancelResult{CancelReason::invalid_handle, OrderId{0}, Quantity{0}}));
+  EXPECT_EQ(book.cancel(Handle{order.resting_handle.index, 0U}),
+            (CancelResult{CancelReason::invalid_handle, OrderId{0}, Quantity{0}}));
+  EXPECT_EQ(book.cancel(Handle{kInvalidIndex, 1U}),
+            (CancelResult{CancelReason::invalid_handle, OrderId{0}, Quantity{0}}));
+  EXPECT_EQ(book.level_info(Side::buy, Price{104}), unchanged);
+
+  const SubmitResult reused = limit(2, Side::buy, 104, 6);
+  EXPECT_EQ(reused.resting_handle.index, order.resting_handle.index);
+  EXPECT_EQ(reused.resting_handle.generation,
+            detail::next_generation(order.resting_handle.generation));
+}
+
+TEST_F(OrderBookTest, AmendDecreaseRetainsHandlePositionAndEqualIsNoOp) {
+  const SubmitResult first = limit(1, Side::sell, 104, 5);
+  const SubmitResult second = limit(2, Side::sell, 104, 4);
+  ASSERT_EQ(first.reject_reason, RejectReason::none);
+  ASSERT_EQ(second.reject_reason, RejectReason::none);
+
+  const AmendResult decreased = book.amend_quantity(first.resting_handle, Quantity{3});
+  EXPECT_EQ(decreased, (AmendResult{AmendReason::none, OrderId{1}, Quantity{5}, Quantity{3},
+                                    first.resting_handle}));
+  const AmendResult equal = book.amend_quantity(first.resting_handle, Quantity{3});
+  EXPECT_EQ(equal, (AmendResult{AmendReason::none, OrderId{1}, Quantity{3}, Quantity{3},
+                                first.resting_handle}));
+  expect_level(book, Side::sell, 104, 7, 2);
+
+  const SubmitResult fill = limit(9, Side::buy, 104, 4);
+  EXPECT_EQ(trades[0], (Trade{OrderId{9}, OrderId{1}, Price{104}, Quantity{3}}));
+  EXPECT_EQ(trades[1], (Trade{OrderId{9}, OrderId{2}, Price{104}, Quantity{1}}));
+  expect_result(fill, RejectReason::none, 4, 0, 2);
+}
+
+TEST_F(OrderBookTest, AmendRejectsZeroIncreaseMaximumAndStaleWithoutMutation) {
+  const SubmitResult order = limit(1, Side::buy, 104, 5);
+  ASSERT_EQ(order.reject_reason, RejectReason::none);
+
+  EXPECT_EQ(book.amend_quantity(order.resting_handle, Quantity{0}),
+            (AmendResult{AmendReason::zero_quantity, OrderId{1}, Quantity{5}, Quantity{0},
+                         order.resting_handle}));
+  EXPECT_EQ(book.amend_quantity(order.resting_handle, Quantity{6}),
+            (AmendResult{AmendReason::increase_not_allowed, OrderId{1}, Quantity{5}, Quantity{6},
+                         order.resting_handle}));
+  EXPECT_EQ(book.amend_quantity(order.resting_handle, Quantity{101}),
+            (AmendResult{AmendReason::quantity_too_large, OrderId{1}, Quantity{5}, Quantity{101},
+                         order.resting_handle}));
+  expect_level(book, Side::buy, 104, 5, 1);
+
+  ASSERT_EQ(book.cancel(order.resting_handle).reject_reason, CancelReason::none);
+  EXPECT_EQ(book.amend_quantity(order.resting_handle, Quantity{3}),
+            (AmendResult{AmendReason::invalid_handle, OrderId{0}, Quantity{0}, Quantity{3},
+                         order.resting_handle}));
+  expect_level(book, Side::buy, 104, 0, 0);
+}
+
+TEST_F(OrderBookTest, ReplaceAtSamePriceLosesPriorityAndMakesOldHandleStale) {
+  const SubmitResult first = limit(1, Side::sell, 104, 2);
+  const SubmitResult second = limit(2, Side::sell, 104, 2);
+  ASSERT_EQ(first.reject_reason, RejectReason::none);
+  ASSERT_EQ(second.reject_reason, RejectReason::none);
+
+  const SubmitResult replacement =
+      book.replace(first.resting_handle, Price{104}, Quantity{2}, trades);
+
+  expect_result(replacement, RejectReason::none, 0, 2, 0, replacement.resting_handle);
+  EXPECT_EQ(book.cancel(first.resting_handle).reject_reason, CancelReason::invalid_handle);
+  EXPECT_EQ(replacement.resting_handle.index, first.resting_handle.index);
+  EXPECT_EQ(replacement.resting_handle.generation,
+            detail::next_generation(first.resting_handle.generation));
+  const SubmitResult fill = limit(9, Side::buy, 104, 4);
+  expect_result(fill, RejectReason::none, 4, 0, 2);
+  EXPECT_EQ(trades[0], (Trade{OrderId{9}, OrderId{2}, Price{104}, Quantity{2}}));
+  EXPECT_EQ(trades[1], (Trade{OrderId{9}, OrderId{1}, Price{104}, Quantity{2}}));
+}
+
+TEST_F(OrderBookTest, ReplaceAtChangedPriceCrossesAtMakerPrices) {
+  const SubmitResult original = limit(1, Side::buy, 102, 5);
+  ASSERT_EQ(original.reject_reason, RejectReason::none);
+  ASSERT_EQ(limit(2, Side::sell, 104, 2).reject_reason, RejectReason::none);
+  ASSERT_EQ(limit(3, Side::sell, 105, 4).reject_reason, RejectReason::none);
+
+  const SubmitResult replacement =
+      book.replace(original.resting_handle, Price{105}, Quantity{5}, trades);
+
+  expect_result(replacement, RejectReason::none, 5, 0, 2);
+  EXPECT_EQ(trades[0], (Trade{OrderId{1}, OrderId{2}, Price{104}, Quantity{2}}));
+  EXPECT_EQ(trades[1], (Trade{OrderId{1}, OrderId{3}, Price{105}, Quantity{3}}));
+  EXPECT_EQ(book.best_bid(), std::nullopt);
+  expect_level(book, Side::sell, 105, 1, 1);
+}
+
+TEST_F(OrderBookTest, InvalidReplacementLeavesOriginalLiveAndUnchanged) {
+  const SubmitResult original = limit(1, Side::buy, 103, 5);
+  ASSERT_EQ(original.reject_reason, RejectReason::none);
+  std::array<Trade, 7> too_small{};
+
+  expect_result(book.replace(original.resting_handle, Price{99}, Quantity{4}, trades),
+                RejectReason::price_out_of_domain, 0, 4, 0);
+  expect_result(book.replace(original.resting_handle, Price{104}, Quantity{0}, trades),
+                RejectReason::zero_quantity, 0, 0, 0);
+  expect_result(book.replace(original.resting_handle, Price{104}, Quantity{101}, trades),
+                RejectReason::quantity_too_large, 0, 101, 0);
+  expect_result(book.replace(original.resting_handle, Price{104}, Quantity{4}, too_small),
+                RejectReason::insufficient_trade_capacity, 0, 4, 0);
+  expect_result(book.replace(Handle{kInvalidIndex, 1U}, Price{104}, Quantity{4}, trades),
+                RejectReason::invalid_handle, 0, 4, 0);
+  expect_level(book, Side::buy, 103, 5, 1);
+
+  const CancelResult cancel = book.cancel(original.resting_handle);
+  EXPECT_EQ(cancel, (CancelResult{CancelReason::none, OrderId{1}, Quantity{5}}));
 }
 
 } // namespace

@@ -39,6 +39,11 @@ constexpr Handle kInvalidHandle{.index = kInvalidIndex, .generation = 0U};
   std::unreachable();
 }
 
+[[nodiscard]] constexpr bool is_valid_time_in_force(TimeInForce time_in_force) noexcept {
+  return time_in_force == TimeInForce::gtc || time_in_force == TimeInForce::ioc ||
+         time_in_force == TimeInForce::fok;
+}
+
 [[nodiscard]] Trade make_trade(Side taker_side, OrderId taker_id, OrderId maker_id, Price price,
                                Quantity quantity) noexcept {
   switch (taker_side) {
@@ -93,6 +98,14 @@ SubmitResult OrderBook::validate(Side side, Quantity quantity,
 
 SubmitResult OrderBook::submit_limit(OrderId id, Side side, Price price, Quantity quantity,
                                      std::span<Trade> trades) noexcept {
+  return submit_limit(id, side, price, quantity, TimeInForce::gtc, trades);
+}
+
+SubmitResult OrderBook::submit_limit(OrderId id, Side side, Price price, Quantity quantity,
+                                     TimeInForce time_in_force, std::span<Trade> trades) noexcept {
+  if (!is_valid_time_in_force(time_in_force)) {
+    return rejected(RejectReason::invalid_time_in_force, quantity);
+  }
   const SubmitResult validation = validate(side, quantity, trades);
   if (validation.reject_reason != RejectReason::none) {
     return validation;
@@ -101,19 +114,53 @@ SubmitResult OrderBook::submit_limit(OrderId id, Side side, Price price, Quantit
   if (!level_index.has_value()) {
     return rejected(RejectReason::price_out_of_domain, quantity);
   }
-  if (arena_.size() == arena_.capacity() && !has_crossing_order(side, *level_index)) {
+  if (time_in_force == TimeInForce::fok && !can_fully_fill(side, *level_index, quantity.value())) {
+    return rejected(RejectReason::fok_not_fillable, quantity);
+  }
+  if (time_in_force == TimeInForce::gtc && arena_.size() == arena_.capacity() &&
+      !has_crossing_order(side, *level_index)) {
     return rejected(RejectReason::order_capacity_exhausted, quantity);
   }
 
   std::uint64_t remaining = quantity.value();
   std::uint32_t trade_count = 0U;
   match(id, side, level_index, remaining, trades, trade_count);
-  const Handle handle = remaining == 0U ? kInvalidHandle : rest(id, side, *level_index, remaining);
+  const bool should_rest = time_in_force == TimeInForce::gtc && remaining != 0U;
+  const Handle handle = should_rest ? rest(id, side, *level_index, remaining) : kInvalidHandle;
   return {.reject_reason = RejectReason::none,
           .executed_quantity = Quantity{quantity.value() - remaining},
           .unfilled_quantity = Quantity{remaining},
           .trade_count = trade_count,
           .resting_handle = handle};
+}
+
+bool OrderBook::can_fully_fill(Side side, std::uint32_t limit_index,
+                               std::uint64_t quantity) const noexcept {
+  const Side maker_side = opposite_side(side);
+  auto maker_level = best_index(maker_side);
+  std::uint64_t available = 0U;
+  while (maker_level.has_value() && crosses(side, *maker_level, limit_index)) {
+    const std::uint64_t level_quantity = level(maker_side, *maker_level).aggregate_quantity;
+    const std::uint64_t needed = quantity - available;
+    available += std::min(level_quantity, needed);
+    if (available == quantity) {
+      return true;
+    }
+    maker_level = next_level(maker_side, *maker_level);
+  }
+  return false;
+}
+
+std::optional<std::uint32_t> OrderBook::next_level(Side side,
+                                                   std::uint32_t current) const noexcept {
+  switch (side) {
+  case Side::buy:
+    return current == 0U ? std::nullopt : occupancy(side).previous_set(current - 1U);
+  case Side::sell:
+    return current + 1U >= domain_.tick_count() ? std::nullopt
+                                                : occupancy(side).next_set(current + 1U);
+  }
+  std::unreachable();
 }
 
 SubmitResult OrderBook::submit_market(OrderId id, Side side, Quantity quantity,
@@ -171,26 +218,93 @@ void OrderBook::match_level(OrderId taker_id, Side taker_side, std::uint32_t lev
     remaining -= execution;
     price_level.aggregate_quantity -= execution;
     if (execution == maker.remaining.value()) {
-      remove_head(maker_side, level_index);
+      unlink(arena_.handle_at(price_level.head_index), 0U);
     } else {
       maker.remaining = Quantity{maker.remaining.value() - execution};
     }
   }
 }
 
-void OrderBook::remove_head(Side side, std::uint32_t level_index) noexcept {
+void OrderBook::unlink(Handle handle, std::uint64_t aggregate_reduction) noexcept {
+  const Order& removed = arena_.order_at(handle.index);
+  const Side side = detail::decode_side(removed.encoded_level_side);
+  const std::uint32_t level_index = detail::decode_level(removed.encoded_level_side);
   PriceLevel& price_level = level(side, level_index);
-  const std::uint32_t removed_index = price_level.head_index;
-  const std::uint32_t next_index = arena_.order_at(removed_index).next_index;
-  price_level.head_index = next_index;
-  --price_level.order_count;
-  if (next_index == kInvalidIndex) {
-    price_level.tail_index = kInvalidIndex;
-    static_cast<void>(occupancy(side).clear(level_index));
+  const std::uint32_t previous_index = removed.prev_index;
+  const std::uint32_t next_index = removed.next_index;
+  if (previous_index == kInvalidIndex) {
+    price_level.head_index = next_index;
   } else {
-    arena_.order_at(next_index).prev_index = kInvalidIndex;
+    arena_.order_at(previous_index).next_index = next_index;
   }
-  arena_.release_index(removed_index);
+  if (next_index == kInvalidIndex) {
+    price_level.tail_index = previous_index;
+  } else {
+    arena_.order_at(next_index).prev_index = previous_index;
+  }
+  price_level.aggregate_quantity -= aggregate_reduction;
+  --price_level.order_count;
+  if (price_level.order_count == 0U) {
+    static_cast<void>(occupancy(side).clear(level_index));
+  }
+  static_cast<void>(arena_.release(handle));
+}
+
+CancelResult OrderBook::cancel(Handle handle) noexcept {
+  const Order* order = arena_.resolve(handle);
+  if (order == nullptr) {
+    return {CancelReason::invalid_handle, OrderId{0U}, Quantity{0U}};
+  }
+  const OrderId id = order->id;
+  const Quantity remaining = order->remaining;
+  unlink(handle, remaining.value());
+  return {CancelReason::none, id, remaining};
+}
+
+AmendResult OrderBook::amend_quantity(Handle handle, Quantity new_remaining) noexcept {
+  Order* order = arena_.resolve(handle);
+  if (order == nullptr) {
+    return {AmendReason::invalid_handle, OrderId{0U}, Quantity{0U}, new_remaining, handle};
+  }
+  const Quantity previous = order->remaining;
+  if (new_remaining.value() == 0U) {
+    return {AmendReason::zero_quantity, order->id, previous, new_remaining, handle};
+  }
+  if (new_remaining.value() > max_order_quantity_) {
+    return {AmendReason::quantity_too_large, order->id, previous, new_remaining, handle};
+  }
+  if (new_remaining > previous) {
+    return {AmendReason::increase_not_allowed, order->id, previous, new_remaining, handle};
+  }
+  if (new_remaining == previous) {
+    return {AmendReason::none, order->id, previous, new_remaining, handle};
+  }
+  const Side side = detail::decode_side(order->encoded_level_side);
+  const std::uint32_t level_index = detail::decode_level(order->encoded_level_side);
+  level(side, level_index).aggregate_quantity -= previous.value() - new_remaining.value();
+  order->remaining = new_remaining;
+  return {AmendReason::none, order->id, previous, new_remaining, handle};
+}
+
+SubmitResult OrderBook::replace(Handle handle, Price new_price, Quantity new_quantity,
+                                std::span<Trade> trades) noexcept {
+  const Order* order = arena_.resolve(handle);
+  if (order == nullptr) {
+    return rejected(RejectReason::invalid_handle, new_quantity);
+  }
+  const Side side = detail::decode_side(order->encoded_level_side);
+  const SubmitResult validation = validate(side, new_quantity, trades);
+  if (validation.reject_reason != RejectReason::none) {
+    return validation;
+  }
+  if (!domain_.index_of(new_price).has_value()) {
+    return rejected(RejectReason::price_out_of_domain, new_quantity);
+  }
+
+  const OrderId id = order->id;
+  const std::uint64_t old_remaining = order->remaining.value();
+  unlink(handle, old_remaining);
+  return submit_limit(id, side, new_price, new_quantity, TimeInForce::gtc, trades);
 }
 
 Handle OrderBook::rest(OrderId id, Side side, std::uint32_t level_index,
