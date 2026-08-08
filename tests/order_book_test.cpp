@@ -114,6 +114,12 @@ TEST(OrderBookConstructionTest, ValidatesConfigurationBoundaries) {
       std::invalid_argument);
 }
 
+TEST(OrderBookConstructionTest, EnforcesExplicitPriceLevelMemoryCeiling) {
+  EXPECT_NO_THROW((OrderBook{PriceDomain{Price{0}, kMaximumPriceLevels}, 0U, Quantity{1U}}));
+  EXPECT_THROW((OrderBook{PriceDomain{Price{0}, kMaximumPriceLevels + 1U}, 0U, Quantity{1U}}),
+               std::length_error);
+}
+
 TEST_F(OrderBookTest, PassiveOrdersRestAndPublishBboAndLevelAggregates) {
   const SubmitResult bid = limit(1, Side::buy, 103, 7);
   const SubmitResult second_bid = limit(2, Side::buy, 103, 5);

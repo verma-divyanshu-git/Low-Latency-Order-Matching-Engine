@@ -117,14 +117,26 @@ std::expected<ReplayResult, ReplayError>
 replay_journal(MmapJournal& journal, SequencedEngine& engine, Sequence snapshot_sequence,
                std::uint64_t snapshot_logical_time, std::span<EngineEvent> event_buffer) noexcept {
   ReplayResult result{};
-  if (event_buffer.size() < engine.order_book().required_trade_capacity() + 1U) {
-    return std::unexpected{ReplayError::apply};
+  const std::uint64_t snapshot_value = snapshot_sequence.value();
+  const bool terminal_point = snapshot_value == std::numeric_limits<std::uint64_t>::max();
+  if (terminal_point || engine.sequence_exhausted()) {
+    if (terminal_point && engine.sequence_exhausted() &&
+        engine.next_sequence().value() == std::numeric_limits<std::uint64_t>::max() &&
+        engine.last_logical_time() == snapshot_logical_time) {
+      return std::unexpected{ReplayError::unverifiable_boundary};
+    }
+    return std::unexpected{ReplayError::engine_state_mismatch};
   }
-  if (snapshot_sequence.value() > journal.size()) {
+  if ((snapshot_value == 0U && snapshot_logical_time != 0U) ||
+      engine.next_sequence().value() != snapshot_value + 1U ||
+      engine.last_logical_time() != snapshot_logical_time) {
+    return std::unexpected{ReplayError::engine_state_mismatch};
+  }
+  if (snapshot_value > journal.size()) {
     return std::unexpected{ReplayError::boundary_missing};
   }
-  if (snapshot_sequence.value() != 0U) {
-    const auto boundary = journal.read(snapshot_sequence.value() - 1U);
+  if (snapshot_value != 0U) {
+    const auto boundary = journal.read(snapshot_value - 1U);
     if (!boundary.has_value()) {
       return std::unexpected{ReplayError::journal};
     }
@@ -135,7 +147,19 @@ replay_journal(MmapJournal& journal, SequencedEngine& engine, Sequence snapshot_
       return std::unexpected{ReplayError::boundary_time_mismatch};
     }
   }
-  for (std::uint64_t index = snapshot_sequence.value(); index < journal.size(); ++index) {
+  if (snapshot_value < journal.size()) {
+    const auto first_suffix = journal.read(snapshot_value);
+    if (!first_suffix.has_value()) {
+      return std::unexpected{ReplayError::journal};
+    }
+    if (first_suffix->sequence != engine.next_sequence()) {
+      return std::unexpected{ReplayError::sequence_gap};
+    }
+  }
+  if (event_buffer.size() < engine.order_book().required_trade_capacity() + 1U) {
+    return std::unexpected{ReplayError::apply};
+  }
+  for (std::uint64_t index = snapshot_value; index < journal.size(); ++index) {
     const auto command = journal.read(index);
     if (!command.has_value()) {
       return std::unexpected{ReplayError::journal};

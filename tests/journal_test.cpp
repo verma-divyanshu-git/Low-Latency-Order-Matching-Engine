@@ -388,6 +388,49 @@ TEST(JournalTest, AcceptsOnlyExactZeroAsCleanEndMarker) {
   EXPECT_EQ(reopened->size(), 1U);
 }
 
+TEST(JournalTest, RejectsCommittedRecordAfterZeroGapWithoutParsingPayload) {
+  TemporaryDirectory temporary;
+  const auto path = temporary.path() / "commands.journal";
+  auto created = MmapJournal::create(path, 3U);
+  ASSERT_TRUE(created.has_value());
+  ASSERT_EQ(created->append(command(1, 1)), JournalError::none);
+  ASSERT_EQ(created->append(command(2, 2)), JournalError::none);
+  ASSERT_EQ(created->append(command(3, 3)), JournalError::none);
+  ASSERT_EQ(created->close(), JournalError::none);
+  for (std::uint64_t index = 0U; index < 4U; ++index) {
+    overwrite_byte(path, kJournalHeaderSize + kJournalRecordSize + index, std::byte{0});
+  }
+  overwrite_byte(path, kJournalHeaderSize + 2U * kJournalRecordSize + kRecordPayloadOffset,
+                 std::byte{0xff});
+
+  EXPECT_EQ(MmapJournal::open(path).error().operation, JournalError::corrupt_record);
+}
+
+TEST(JournalTest, RejectsMalformedMarkerAfterZeroGap) {
+  TemporaryDirectory temporary;
+  const auto path = temporary.path() / "commands.journal";
+  auto created = MmapJournal::create(path, 3U);
+  ASSERT_TRUE(created.has_value());
+  ASSERT_EQ(created->append(command(1, 1)), JournalError::none);
+  ASSERT_EQ(created->close(), JournalError::none);
+  overwrite_byte(path, kJournalHeaderSize + 2U * kJournalRecordSize, std::byte{0x7f});
+
+  EXPECT_EQ(MmapJournal::open(path).error().operation, JournalError::corrupt_record);
+}
+
+TEST(JournalTest, AcceptsAllZeroSlotsAfterCleanEnd) {
+  TemporaryDirectory temporary;
+  const auto path = temporary.path() / "commands.journal";
+  auto created = MmapJournal::create(path, 3U);
+  ASSERT_TRUE(created.has_value());
+  ASSERT_EQ(created->append(command(1, 1)), JournalError::none);
+  ASSERT_EQ(created->close(), JournalError::none);
+
+  auto reopened = MmapJournal::open(path);
+  ASSERT_TRUE(reopened.has_value());
+  EXPECT_EQ(reopened->size(), 1U);
+}
+
 TEST(JournalTest, RejectsMalformedNonzeroCommitMarker) {
   TemporaryDirectory temporary;
   const auto path = temporary.path() / "commands.journal";

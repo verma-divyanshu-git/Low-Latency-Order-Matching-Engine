@@ -14,6 +14,8 @@
 
 namespace matching_engine {
 
+inline constexpr std::uint32_t kMaximumPriceLevels = 1'000'000U;
+
 struct PriceLevel {
   std::uint32_t head_index{kInvalidIndex};
   std::uint32_t tail_index{kInvalidIndex};

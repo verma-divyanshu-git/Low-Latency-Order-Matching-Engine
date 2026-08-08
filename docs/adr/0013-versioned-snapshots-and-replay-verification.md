@@ -22,6 +22,10 @@ Report a post-rename directory synchronization failure as indeterminate.
 
 Keep the sequence-1 journal prefix for this phase.
 Replay validates the snapshot boundary against that prefix, then applies only the suffix.
+Replay validates the engine next sequence, logical time, and exhaustion state against the snapshot point before applying any suffix command.
+Terminal snapshots remain loadable and preserve exhaustion, but replay rejects them as unverifiable with the current sequence-1 journal format.
+Journal recovery rejects every nonzero commit marker after the first exact zero gap without parsing later payloads.
+Bound both arena capacity and price levels at 1,000,000, with all price-level limits checked before allocation.
 Use canonical event bytes and streaming CRC32C with explicit counts as a stable non-cryptographic fingerprint.
 Continue to use exact event equality in correctness tests.
 
@@ -30,6 +34,8 @@ Continue to use exact event equality in correctness tests.
 Snapshots recover physical arena behavior without tying the format to C++ object representation.
 Restore performs bounded allocation and validation off the matching hot path.
 Files are bounded to 1,000,000 slots and 48,000,112 bytes.
+Price-domain allocations are bounded to 1,000,000 levels, roughly 48 MB for both level arrays on the supported ABI plus bounded occupancy summaries.
+Together with the quantity bound, these limits prevent resource amplification and make aggregate overflow unreachable for a valid snapshot.
 Crash recovery may need operator inspection after an indeterminate post-rename result.
 CRC32C detects ordinary corruption but provides no authentication or collision resistance.
 Journal compaction, rotation, suffix-only journals, replication, and cryptographic signing remain future work.

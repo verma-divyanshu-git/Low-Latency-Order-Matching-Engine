@@ -13,6 +13,10 @@ Restore builds a private candidate engine, validates the free list and live FIFO
 The format is little-endian.
 The header is 112 bytes and each slot record is 48 bytes.
 At most 1,000,000 slots are accepted, making the maximum snapshot size 48,000,112 bytes.
+The core also accepts at most 1,000,000 price levels and rejects a larger domain before allocating level arrays.
+At the limit, the two `PriceLevel` arrays occupy about 48 MB on the supported ABI, plus bounded occupancy summaries and the independently bounded order arena.
+This ceiling bounds memory amplification from CLI arguments and untrusted snapshot headers.
+It also makes a level aggregate overflow structurally impossible because at most 1,000,000 live slots can each contain at most `UINT32_MAX` quantity.
 
 The header layout is:
 
@@ -67,9 +71,16 @@ Prices are already represented in integer ticks, so the current format requires 
 With a snapshot, its configuration is authoritative and all config flags are rejected.
 
 The current journal format retains a prefix beginning at sequence 1.
+Journal recovery treats the first exact zero commit marker as the logical end, then verifies that every later marker is also exact zero.
+Any committed or malformed nonzero marker after that gap is corruption, and its payload is not parsed.
 For a nonzero snapshot boundary, replay requires the journal record at that exact sequence and requires its logical time to equal the snapshot logical time.
 Records before the boundary are validated by journal recovery and skipped without applying them.
 Every later command must equal the engine's next sequence, so gaps are never silently skipped.
+Before applying any suffix command, replay binds the supplied engine state to the boundary.
+A sequence-zero boundary requires logical time zero, engine next sequence 1, last logical time zero, and a non-exhausted sequencer.
+A normal boundary `S` requires engine next sequence `S + 1`, engine last logical time equal to the boundary time, and a non-exhausted sequencer.
+The retained journal must contain command `S`, and the first suffix command, if present, must equal the engine next sequence.
+Terminal snapshots at `UINT64_MAX` preserve their exhausted sequencer state when loaded, but the replay helper and current CLI reject them as an unverifiable boundary because the sequence-1 journal format cannot retain enough records to prove that boundary.
 Journal compaction, suffix-only journals, and rotation are not implemented yet.
 
 Every replayed event is encoded into a canonical 64-byte little-endian record.

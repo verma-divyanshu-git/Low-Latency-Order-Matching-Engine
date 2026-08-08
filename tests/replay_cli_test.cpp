@@ -1,9 +1,11 @@
 #include "matching_engine/journal.hpp"
 #include "matching_engine/replay.hpp"
+#include "matching_engine/snapshot.hpp"
 
 #include <array>
 #include <filesystem>
 #include <gtest/gtest.h>
+#include <limits>
 #include <string>
 #include <sys/wait.h>
 #include <system_error>
@@ -143,6 +145,51 @@ TEST(ReplayCliTest, HelpIsSuccessfulAndConfigDuplicatesAreRejected) {
   EXPECT_NE(duplicate.exit_code, 0);
   EXPECT_TRUE(duplicate.output.empty());
   EXPECT_EQ(duplicate.error, "matching_engine_replay: duplicate --journal\n");
+}
+
+TEST(ReplayCliTest, RejectsPriceLevelLimitBeforeReplay) {
+  TemporaryDirectory temporary;
+  const auto path = temporary.path() / "commands.journal";
+  auto journal = MmapJournal::create(path, 1U);
+  ASSERT_TRUE(journal.has_value());
+  ASSERT_EQ(journal->close(), JournalError::none);
+
+  const ProcessResult result =
+      run_cli({"--journal", path.string(), "--min", "0", "--max", "1000000", "--tick", "1",
+               "--max-orders", "0", "--max-quantity", "1"});
+
+  EXPECT_NE(result.exit_code, 0);
+  EXPECT_TRUE(result.output.empty());
+  EXPECT_EQ(result.error, "matching_engine_replay: engine config out of range\n");
+}
+
+TEST(ReplayCliTest, RejectsTerminalSnapshotBoundaryExplicitly) {
+  TemporaryDirectory temporary;
+  const auto journal_path = temporary.path() / "commands.journal";
+  auto journal = MmapJournal::create(journal_path, 1U);
+  ASSERT_TRUE(journal.has_value());
+  ASSERT_EQ(journal->close(), JournalError::none);
+  SequencedEngine engine{PriceDomain{Price{0}, 1U}, 0U, Quantity{1U},
+                         Sequence{std::numeric_limits<std::uint64_t>::max()}, 9U};
+  std::array<EngineEvent, 1U> events{};
+  ASSERT_EQ(engine
+                .apply({CommandPayload::submit_market(OrderId{1U}, Side::buy, Quantity{1U}),
+                        Sequence{std::numeric_limits<std::uint64_t>::max()}, 9U},
+                       events)
+                .status,
+            ApplyStatus::applied);
+  const auto snapshot_path = temporary.path() / "engine.snapshot";
+  ASSERT_EQ(
+      save_snapshot_atomic(snapshot_path, engine,
+                           SnapshotPoint{Sequence{std::numeric_limits<std::uint64_t>::max()}, 9U}),
+      SnapshotError::none);
+
+  const ProcessResult result =
+      run_cli({"--journal", journal_path.string(), "--snapshot", snapshot_path.string()});
+
+  EXPECT_NE(result.exit_code, 0);
+  EXPECT_TRUE(result.output.empty());
+  EXPECT_EQ(result.error, "matching_engine_replay: terminal snapshot boundary is unverifiable\n");
 }
 
 } // namespace

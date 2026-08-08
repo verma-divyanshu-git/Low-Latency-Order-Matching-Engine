@@ -184,6 +184,21 @@ bool read_exact(int descriptor, std::span<std::byte> bytes) noexcept {
   return true;
 }
 
+SnapshotError snapshot_invariant_error(InvariantViolation violation) noexcept {
+  switch (violation) {
+  case InvariantViolation::aggregate_overflow:
+    return SnapshotError::aggregate_overflow;
+  case InvariantViolation::crossed_book:
+    return SnapshotError::crossed_book;
+  case InvariantViolation::reachable_count_mismatch:
+    return SnapshotError::live_count_mismatch;
+  case InvariantViolation::none:
+    return SnapshotError::none;
+  default:
+    return SnapshotError::invalid_order_graph;
+  }
+}
+
 } // namespace
 
 namespace detail {
@@ -280,8 +295,14 @@ public:
     const std::uint32_t live_count = read_u32(bytes, 52U);
     const std::uint32_t tick_count = read_u32(bytes, 40U);
     const std::uint32_t max_quantity = read_u32(bytes, 44U);
-    if (live_count > capacity || tick_count == 0U || max_quantity == 0U) {
-      return std::unexpected{SnapshotError::invalid_state};
+    if (tick_count == 0U || tick_count > kMaximumPriceLevels) {
+      return std::unexpected{SnapshotError::price_level_limit};
+    }
+    if (live_count > capacity) {
+      return std::unexpected{SnapshotError::live_count_mismatch};
+    }
+    if (max_quantity == 0U) {
+      return std::unexpected{SnapshotError::invalid_configuration};
     }
     const std::uint64_t next_sequence = read_u64(bytes, 64U);
     const std::uint64_t last_time = read_u64(bytes, 72U);
@@ -292,7 +313,7 @@ public:
                              next_sequence != point.sequence.value() + 1U)) ||
         (exhausted == 1U && (point.sequence.value() != std::numeric_limits<std::uint64_t>::max() ||
                              next_sequence != std::numeric_limits<std::uint64_t>::max()))) {
-      return std::unexpected{SnapshotError::invalid_state};
+      return std::unexpected{SnapshotError::invalid_sequence_state};
     }
     try {
       auto engine = std::make_unique<SequencedEngine>(
@@ -310,9 +331,12 @@ public:
         slot.generation = read_u32(bytes, offset);
         slot.free_next = read_u32(bytes, offset + 4U);
         const std::uint8_t live = std::to_integer<std::uint8_t>(bytes[offset + 8U]);
-        if (slot.generation == 0U || live > 1U || !zero(bytes.subspan(offset + 9U, 3U)) ||
+        if (live > 1U || !zero(bytes.subspan(offset + 9U, 3U)) ||
             read_u32(bytes, offset + 44U) != 0U) {
           return std::unexpected{SnapshotError::noncanonical_slot};
+        }
+        if (slot.generation == 0U) {
+          return std::unexpected{SnapshotError::invalid_slot_metadata};
         }
         slot.live = live == 1U;
         if (!slot.live) {
@@ -339,25 +363,29 @@ public:
             level >= tick_count || slot.order.reserved_flags != 0U ||
             (slot.order.prev_index != kInvalidIndex && slot.order.prev_index >= capacity) ||
             (slot.order.next_index != kInvalidIndex && slot.order.next_index >= capacity)) {
-          return std::unexpected{SnapshotError::invalid_state};
+          return std::unexpected{
+              (slot.order.prev_index != kInvalidIndex && slot.order.prev_index >= capacity) ||
+                      (slot.order.next_index != kInvalidIndex && slot.order.next_index >= capacity)
+                  ? SnapshotError::invalid_order_graph
+                  : SnapshotError::invalid_order};
         }
         PriceLevel& price_level =
             book.level(detail::decode_side(slot.order.encoded_level_side), level);
         if (price_level.aggregate_quantity >
             std::numeric_limits<std::uint64_t>::max() - slot.order.remaining.value()) {
-          return std::unexpected{SnapshotError::invalid_state};
+          return std::unexpected{SnapshotError::aggregate_overflow};
         }
         price_level.aggregate_quantity += slot.order.remaining.value();
         ++price_level.order_count;
         if (slot.order.prev_index == kInvalidIndex) {
           if (price_level.head_index != kInvalidIndex) {
-            return std::unexpected{SnapshotError::invalid_state};
+            return std::unexpected{SnapshotError::invalid_order_graph};
           }
           price_level.head_index = index;
         }
         if (slot.order.next_index == kInvalidIndex) {
           if (price_level.tail_index != kInvalidIndex) {
-            return std::unexpected{SnapshotError::invalid_state};
+            return std::unexpected{SnapshotError::invalid_order_graph};
           }
           price_level.tail_index = index;
         }
@@ -365,31 +393,40 @@ public:
             book.occupancy(detail::decode_side(slot.order.encoded_level_side)).set(level));
       }
       if (observed_live != live_count) {
-        return std::unexpected{SnapshotError::invalid_state};
+        return std::unexpected{SnapshotError::live_count_mismatch};
       }
       std::vector<bool> free_seen(capacity, false);
       std::uint32_t free_count{};
       std::uint32_t current = book.arena_.free_head_;
       while (current != kInvalidIndex) {
         if (current >= capacity || book.arena_.slots_[current].live || free_seen[current]) {
-          return std::unexpected{SnapshotError::invalid_state};
+          return std::unexpected{SnapshotError::invalid_free_list};
         }
         free_seen[current] = true;
         ++free_count;
         current = book.arena_.slots_[current].free_next;
       }
       if (free_count != capacity - live_count) {
-        return std::unexpected{SnapshotError::invalid_state};
+        return std::unexpected{SnapshotError::invalid_free_list};
       }
       for (std::uint32_t index = 0; index < capacity; ++index) {
         if (!book.arena_.slots_[index].live && !free_seen[index]) {
-          return std::unexpected{SnapshotError::invalid_state};
+          return std::unexpected{SnapshotError::invalid_free_list};
         }
       }
-      if (book.check_invariants().violation != InvariantViolation::none) {
-        return std::unexpected{SnapshotError::invalid_state};
+      const InvariantResult invariant = book.check_invariants();
+      if (invariant.violation != InvariantViolation::none) {
+        return std::unexpected{snapshot_invariant_error(invariant.violation)};
       }
       return DecodedSnapshot{std::move(engine), point};
+    } catch (const std::bad_alloc&) {
+      return std::unexpected{SnapshotError::allocation_failed};
+    } catch (const std::invalid_argument&) {
+      return std::unexpected{SnapshotError::invalid_configuration};
+    } catch (const std::length_error&) {
+      return std::unexpected{SnapshotError::invalid_configuration};
+    } catch (const std::overflow_error&) {
+      return std::unexpected{SnapshotError::invalid_configuration};
     } catch (...) {
       return std::unexpected{SnapshotError::invalid_state};
     }
@@ -422,8 +459,30 @@ const char* snapshot_error_message(SnapshotError error) noexcept {
     return "unsupported snapshot version";
   case SnapshotError::checksum_mismatch:
     return "snapshot CRC32C mismatch";
+  case SnapshotError::price_level_limit:
+    return "snapshot price-level limit exceeded";
+  case SnapshotError::invalid_configuration:
+    return "invalid snapshot engine configuration";
+  case SnapshotError::invalid_sequence_state:
+    return "invalid snapshot sequence state";
   case SnapshotError::noncanonical_slot:
     return "noncanonical snapshot slot";
+  case SnapshotError::invalid_slot_metadata:
+    return "invalid snapshot slot metadata";
+  case SnapshotError::live_count_mismatch:
+    return "snapshot live count mismatch";
+  case SnapshotError::invalid_free_list:
+    return "invalid snapshot free list";
+  case SnapshotError::invalid_order:
+    return "invalid snapshot order";
+  case SnapshotError::invalid_order_graph:
+    return "invalid snapshot order graph";
+  case SnapshotError::aggregate_overflow:
+    return "snapshot aggregate overflow";
+  case SnapshotError::crossed_book:
+    return "snapshot book is crossed";
+  case SnapshotError::allocation_failed:
+    return "snapshot allocation failed";
   case SnapshotError::invalid_state:
     return "invalid snapshot engine state";
   case SnapshotError::io_error:
@@ -438,7 +497,11 @@ const char* snapshot_error_message(SnapshotError error) noexcept {
 
 std::expected<std::vector<std::byte>, SnapshotError> encode_snapshot(const SequencedEngine& engine,
                                                                      SnapshotPoint point) {
-  return detail::SnapshotCodec::encode(engine, point);
+  try {
+    return detail::SnapshotCodec::encode(engine, point);
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{SnapshotError::allocation_failed};
+  }
 }
 
 std::expected<DecodedSnapshot, SnapshotError> decode_snapshot(std::span<const std::byte> bytes) {
@@ -583,7 +646,13 @@ std::expected<DecodedSnapshot, SnapshotError> load_snapshot(const std::filesyste
   }
   std::vector<std::byte> bytes;
   if (error == SnapshotError::none) {
-    bytes.resize(static_cast<std::size_t>(before.st_size));
+    try {
+      bytes.resize(static_cast<std::size_t>(before.st_size));
+    } catch (const std::bad_alloc&) {
+      error = SnapshotError::allocation_failed;
+    }
+  }
+  if (error == SnapshotError::none) {
     if (!read_exact(descriptor, bytes)) {
       error = SnapshotError::io_error;
     }

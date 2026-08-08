@@ -142,6 +142,28 @@ std::string nullable_price(std::optional<Price> price) {
   return price.has_value() ? std::to_string(price->ticks()) : "null";
 }
 
+std::string_view replay_error_message(ReplayError error) noexcept {
+  switch (error) {
+  case ReplayError::journal:
+    return "journal read failed";
+  case ReplayError::engine_state_mismatch:
+    return "engine and snapshot boundary mismatch";
+  case ReplayError::unverifiable_boundary:
+    return "terminal snapshot boundary is unverifiable";
+  case ReplayError::boundary_missing:
+    return "snapshot boundary missing from journal";
+  case ReplayError::boundary_time_mismatch:
+    return "snapshot boundary logical time mismatch";
+  case ReplayError::sequence_gap:
+    return "journal suffix sequence mismatch";
+  case ReplayError::apply:
+    return "command apply failed";
+  case ReplayError::invariant:
+    return "engine invariant failure";
+  }
+  return "replay failed";
+}
+
 } // namespace
 } // namespace matching_engine
 
@@ -192,8 +214,8 @@ int main(int argc, char** argv) {
     }
     const std::uint64_t distance =
         static_cast<std::uint64_t>(*options.maximum) - static_cast<std::uint64_t>(*options.minimum);
-    if (distance >= std::numeric_limits<std::uint32_t>::max() ||
-        *options.max_orders > kMaximumSnapshotSlots || *options.max_quantity == 0U ||
+    if (distance >= kMaximumPriceLevels || *options.max_orders > kMaximumSnapshotSlots ||
+        *options.max_quantity == 0U ||
         *options.max_quantity > std::numeric_limits<std::uint32_t>::max()) {
       return fail("engine config out of range");
     }
@@ -213,7 +235,7 @@ int main(int argc, char** argv) {
   const auto replayed =
       replay_journal(*journal, *engine, point.sequence, point.logical_time, events);
   if (!replayed.has_value()) {
-    return fail("replay failed");
+    return fail(replay_error_message(replayed.error()));
   }
   const InvariantResult invariant = engine->order_book().check_invariants();
   if (invariant.violation != InvariantViolation::none) {

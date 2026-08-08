@@ -56,6 +56,8 @@ struct ReplayResult {
 
 enum class ReplayError : std::uint8_t {
   journal,
+  engine_state_mismatch,
+  unverifiable_boundary,
   boundary_missing,
   boundary_time_mismatch,
   sequence_gap,

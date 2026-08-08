@@ -110,6 +110,8 @@ Future benchmark reports will:
 
 - This is not production-ready trading software.
 - Command-journal persistence, snapshots, and replay verification are implemented, but compaction, rotation, networking, risk checks, authentication, authorization, administration, and operational monitoring are not.
+- Order capacity and price-domain size are each capped at 1,000,000 to bound snapshot files and restore-time memory amplification.
+- Exhausted terminal snapshots can be loaded, but the current replay verifier rejects them because a sequence-1 journal cannot prove the `UINT64_MAX` boundary.
 - Duplicate order identifiers are not detected by the matching core and must be rejected by a future gateway.
 - Structural invariant checks do not prove volume conservation by themselves; the differential driver checks an independent conservation ledger, while self-trade prevention remains unimplemented.
 - Each order book requires exclusive access by one matching thread; concurrent calls are unsupported.

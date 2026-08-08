@@ -722,6 +722,12 @@ JournalError MmapJournal::recover() noexcept {
     const auto record = record_span(mapping_, index);
     const std::uint32_t marker = read_u32(record, static_cast<std::size_t>(kRecordCommitOffset));
     if (marker == 0U) {
+      for (std::uint64_t trailing = index + 1U; trailing < capacity_; ++trailing) {
+        const auto trailing_record = record_span(mapping_, trailing);
+        if (read_u32(trailing_record, static_cast<std::size_t>(kRecordCommitOffset)) != 0U) {
+          return JournalError::corrupt_record;
+        }
+      }
       return JournalError::none;
     }
     if (marker != kCommittedMarker) {

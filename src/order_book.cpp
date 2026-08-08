@@ -71,8 +71,9 @@ OrderBook::OrderBook(PriceDomain domain, std::size_t max_orders, Quantity max_or
 }
 
 PriceDomain OrderBook::checked_domain(PriceDomain domain) {
-  if (!detail::is_encodable_tick_count(domain.tick_count())) {
-    throw std::length_error{"OrderBook price domain exceeds encoded level range"};
+  if (!detail::is_encodable_tick_count(domain.tick_count()) ||
+      domain.tick_count() > kMaximumPriceLevels) {
+    throw std::length_error{"OrderBook price domain exceeds configured level limit"};
   }
   return domain;
 }
