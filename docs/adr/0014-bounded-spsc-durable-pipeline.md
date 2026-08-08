@@ -19,6 +19,8 @@ Ingress follows check capacity, check journal, stamp, append, publish.
 Any persistence failure after stamping permanently stops that ingress object.
 Matching peeks at a command, preflights the engine's exact conservative event requirement, applies into fixed scratch, publishes the exact batch, and then releases input.
 No queue reservation API is needed because only one producer can consume availability and consumer progress can only add capacity.
+The producer instead exposes an all-or-nothing copy batch operation that initializes every slot and release-publishes the tail exactly once.
+Matching construction rejects event queues smaller than the engine's maximum batch, making successful preflight followed by failed batch publication an invariant violation.
 
 Snapshot persistence is permitted only on the matching owner thread between command-processing calls.
 It may stall that thread.
@@ -30,6 +32,7 @@ Unsigned index arithmetic supports wrap while bounded occupancy prevents ambigui
 Durable append precedes matcher visibility.
 Ingress backpressure consumes no sequence.
 Output backpressure leaves both command input and engine state untouched.
+Publication callbacks must be non-throwing so callback failure cannot consume an event.
 Persistence uncertainty and impossible apply mismatches stop their stage and require explicit recovery instead of skipping.
 
 The queue is SPSC only.

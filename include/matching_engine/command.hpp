@@ -134,6 +134,9 @@ public:
   [[nodiscard]] constexpr std::uint64_t last_logical_time() const noexcept {
     return last_logical_time_;
   }
+  [[nodiscard]] constexpr bool exhausted() const noexcept {
+    return exhausted_;
+  }
 
 private:
   Sequence next_sequence_{1U};

@@ -15,6 +15,8 @@ Unsigned monotonic index subtraction remains correct across `uint64_t` wrap beca
 Producer and consumer state use explicit 128-byte alignment.
 This deliberately conservative value avoids relying on implementation-defined `std::hardware_destructive_interference_size` warnings while separating independently written cache lines.
 The producer initializes a payload and then release-stores the published tail.
+`try_push_batch` first checks capacity, initializes every possibly wrapped slot, and performs exactly one release-store after the complete non-empty batch is ready.
+An empty batch succeeds without changing the published tail.
 The consumer acquire-loads that tail before reading the payload.
 The consumer release-stores the published head after reading.
 The producer acquire-loads that head before reusing the slot.
@@ -30,16 +32,22 @@ The queue exposes no slot pointers or reservations.
 It stamps, durably appends, and only then publishes the command.
 Queue backpressure and journal-full status consume neither sequence nor journal capacity.
 Any append failure after stamping poisons ingress.
-`commit_indeterminate` is returned as `persistence_required`, leaves the command unpublished, and requires journal recovery before another ingress instance continues.
+Invalid payload, decreasing logical time, sequence exhaustion, queue backpressure, journal full, persistence failure, commit-indeterminate, recovery-required, and stopped states have distinct `IngressStatus` values.
+`commit_indeterminate` leaves the command unpublished and requires journal recovery before another ingress instance continues.
 Therefore every command the matcher can apply is present in the journal.
 
 `MatchingStage` peeks without releasing the command.
 It asks `SequencedEngine` for the command's exact conservative event-capacity requirement and checks producer availability before mutation.
-The engine applies into construction-time scratch storage, exact ordered events are published, and only then is the command released.
+Construction rejects an event queue smaller than the engine's maximum possible event batch, including the one-event zero-arena case.
+The engine applies into construction-time scratch storage, the exact ordered event span is published with one batch release, and only then is the command released.
+After successful preflight, batch publication cannot fail under the single-producer contract because only the consumer can increase available capacity.
+If that invariant is violated, matching poisons with `internal_invariant_failure` and retains the input command rather than silently dropping it.
 Output backpressure leaves the command and engine untouched.
 An invalid journal command or sequence/apply mismatch poisons the stage rather than skipping input.
+`MatchingStatus` distinguishes validation, sequence, logical-time, exhaustion, impossible-capacity, internal-invariant, backpressure, empty-input, and poisoned outcomes.
 
 `PublicationStage` provides allocation-free ordered pop and callback drain operations.
+Drain callbacks are compile-time constrained to non-throwing invocations so an event cannot be consumed by an exception before callback completion.
 Events retain command sequence and event index.
 
 ## Snapshots and shutdown
@@ -49,7 +57,9 @@ There is no active command reservation at that boundary, so a snapshot never obs
 Persistence may stall the matching owner and is intentionally excluded from matching-only benchmark intervals.
 
 Clean shutdown stops ingress, drains the command queue through matching, then drains the event queue through publication.
-The deterministic threaded test uses bounded operation counts and externally owned `std::jthread`s.
+Concurrent tests and benchmarks share stop state across all participants and use a generous watchdog only to terminate CI hangs.
+Failure in any stage requests stop, while publication drains events already released by matching.
+The deterministic threaded test uses a mixed valid workload with fills, partial fills, cancels, amendments, replacements, FOK rejection, market orders, event batches, and queue wrap.
 
 ## Benchmarks
 

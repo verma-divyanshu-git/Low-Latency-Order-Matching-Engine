@@ -14,4 +14,4 @@ Task 3B: complete (commits 792b7e7..e1a9854, methodology and quality reviews cle
 Task 3C: complete (commits cc0df2c..674e67c, review clean, pushed to origin/main).
 Phase 3 measurement: complete (qualified clock refusal, open-loop histograms, CO diagnostic, SVG rate sweeps, host verifier, CI-only throughput gate).
 Phase 4 determinism: complete (canonical command log, crash-detectable mmap journal, atomic snapshots, exact suffix replay, standalone verifier).
-Phase 5A pipeline: complete (bounded allocation-free SPSC queues, durable ingress, single-writer matching, ordered publication, deterministic threaded stress, and throughput artifacts).
+Phase 5A pipeline: complete (atomic SPSC batches, exact queue sizing, precise stage statuses, durable ingress, single-writer matching, ordered publication, bounded mixed threaded stress, and throughput artifacts).

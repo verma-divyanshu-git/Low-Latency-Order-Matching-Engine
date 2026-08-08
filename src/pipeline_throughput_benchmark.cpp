@@ -3,15 +3,17 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <stop_token>
 #include <string>
 #include <system_error>
 #include <thread>
 #include <unistd.h>
 
-int main() {
+int run_benchmark() {
   using namespace matching_engine;
   constexpr std::size_t operations = 1'000U;
   constexpr std::size_t queue_capacity = 256U;
@@ -42,33 +44,50 @@ int main() {
   PublicationStage publication{std::move(*event_consumer)};
   std::atomic<bool> ingress_done{};
   std::atomic<bool> matching_done{};
+  std::atomic<bool> completed{};
   std::atomic<bool> failed{};
+  std::stop_source stop;
   std::uint64_t event_count{};
   std::uint64_t checksum{};
+  const auto fail = [&] {
+    failed.store(true, std::memory_order_release);
+    stop.request_stop();
+  };
+  std::jthread watchdog{[&](const std::stop_token& token) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+    while (!token.stop_requested() && !completed.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    if (!completed.load(std::memory_order_acquire) && !token.stop_requested()) {
+      fail();
+    }
+  }};
 
   const auto start = std::chrono::steady_clock::now();
   std::jthread ingress_thread{[&] {
-    for (std::size_t index = 0U; index < operations;) {
-      const PipelineStatus status = ingress.try_ingest(
+    for (std::size_t index = 0U; index < operations && !stop.stop_requested();) {
+      const IngressStatus status = ingress.try_ingest(
           CommandPayload::submit_market(OrderId{index + 1U}, Side::buy, Quantity{1U}), index + 1U);
-      if (status == PipelineStatus::progress) {
+      if (status == IngressStatus::progress) {
         ++index;
-      } else if (status != PipelineStatus::ingress_backpressure) {
-        failed.store(true, std::memory_order_release);
-        break;
+      } else if (status != IngressStatus::queue_backpressure) {
+        fail();
+      } else {
+        std::this_thread::yield();
       }
     }
     ingress_done.store(true, std::memory_order_release);
   }};
   std::jthread matching_thread{[&] {
-    while (!ingress_done.load(std::memory_order_acquire) || !commands.empty()) {
-      const PipelineStatus status = matching.process_one();
-      if (status != PipelineStatus::progress && status != PipelineStatus::input_empty &&
-          status != PipelineStatus::output_backpressure) {
-        failed.store(true, std::memory_order_release);
-        break;
+    while ((!ingress_done.load(std::memory_order_acquire) || !commands.empty()) &&
+           !stop.stop_requested()) {
+      const MatchingStatus status = matching.process_one();
+      if (status != MatchingStatus::progress && status != MatchingStatus::input_empty &&
+          status != MatchingStatus::output_backpressure) {
+        fail();
       }
-      if (status != PipelineStatus::progress) {
+      if (status != MatchingStatus::progress) {
         std::this_thread::yield();
       }
     }
@@ -77,9 +96,11 @@ int main() {
   std::jthread publication_thread{[&] {
     while (!matching_done.load(std::memory_order_acquire) || !events.empty()) {
       EngineEvent event{};
-      if (publication.try_pop(event) == PipelineStatus::progress) {
+      if (publication.try_pop(event) == PublicationStatus::progress) {
         ++event_count;
         checksum += event.command_sequence.value();
+      } else if (stop.stop_requested() && matching_done.load(std::memory_order_acquire)) {
+        break;
       } else {
         std::this_thread::yield();
       }
@@ -88,6 +109,9 @@ int main() {
   ingress_thread.join();
   matching_thread.join();
   publication_thread.join();
+  completed.store(true, std::memory_order_release);
+  watchdog.request_stop();
+  watchdog.join();
   const auto elapsed = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start)
           .count());
@@ -105,4 +129,15 @@ int main() {
             << ",\"event_count\":" << event_count << ",\"checksum\":" << checksum
             << ",\"thread_pinning\":\"external_or_none\"}\n";
   return !failed.load(std::memory_order_acquire) && event_count == operations ? 0 : 3;
+}
+
+int main() {
+  try {
+    return run_benchmark();
+  } catch (const std::exception& exception) {
+    std::cerr << "pipeline_throughput_benchmark: " << exception.what() << '\n';
+  } catch (...) {
+    std::cerr << "pipeline_throughput_benchmark: unknown failure\n";
+  }
+  return 1;
 }

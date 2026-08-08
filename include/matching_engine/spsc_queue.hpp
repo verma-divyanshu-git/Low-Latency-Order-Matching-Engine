@@ -7,6 +7,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -33,6 +34,9 @@ public:
 
     [[nodiscard]] bool try_push(const T& value) noexcept {
       return queue_ != nullptr && queue_->try_push(value);
+    }
+    [[nodiscard]] bool try_push_batch(std::span<const T> values) noexcept {
+      return queue_ != nullptr && queue_->try_push_batch(values);
     }
     [[nodiscard]] std::size_t available() noexcept {
       return queue_ == nullptr ? 0U : queue_->producer_available();
@@ -141,17 +145,25 @@ private:
   }
 
   [[nodiscard]] bool try_push(const T& value) noexcept {
-    const std::uint64_t tail = producer_.tail;
-    if (tail - producer_.cached_head == capacity_) {
-      producer_.cached_head = consumer_.published_head.load(std::memory_order_acquire);
-      if (tail - producer_.cached_head == capacity_) {
-        return false;
-      }
+    return try_push_batch(std::span<const T>{&value, 1U});
+  }
+
+  [[nodiscard]] bool try_push_batch(std::span<const T> values) noexcept {
+    if (values.empty()) {
+      return true;
+    }
+    if (values.size() > capacity_ || producer_available() < values.size()) {
+      return false;
     }
 
-    slots_[static_cast<std::size_t>(tail % capacity_)] = value;
-    producer_.tail = tail + 1U;
-    // Payload initialization happens-before a consumer that observes this tail.
+    const std::uint64_t tail = producer_.tail;
+    for (std::size_t index = 0U; index < values.size(); ++index) {
+      slots_[static_cast<std::size_t>((tail + static_cast<std::uint64_t>(index)) % capacity_)] =
+          values[index];
+    }
+    producer_.tail = tail + static_cast<std::uint64_t>(values.size());
+    // Every payload initialization happens-before a consumer that observes the
+    // single tail publication. No prefix of this batch becomes visible.
     producer_.published_tail.store(producer_.tail, std::memory_order_release);
     return true;
   }

@@ -8,40 +8,59 @@ DurableIngressStage::DurableIngressStage(Sequencer sequencer, MmapJournal journa
                                          CommandQueue::Producer producer) noexcept
     : sequencer_{sequencer}, journal_{std::move(journal)}, producer_{std::move(producer)} {}
 
-PipelineStatus DurableIngressStage::try_ingest(const CommandPayload& payload,
-                                               std::uint64_t logical_time) noexcept {
-  if (poisoned_ || !journal_.writable()) {
-    poisoned_ = true;
-    return PipelineStatus::stopped_poisoned;
+IngressStatus DurableIngressStage::try_ingest(const CommandPayload& payload,
+                                              std::uint64_t logical_time) noexcept {
+  if (stopped_) {
+    return IngressStatus::stopped_poisoned;
+  }
+  if (recovery_required_ || !journal_.writable()) {
+    recovery_required_ = true;
+    return IngressStatus::recovery_required;
+  }
+  if (validate_command_payload(payload) != CommandValidationError::none) {
+    return IngressStatus::invalid_payload;
+  }
+  if (sequencer_.exhausted()) {
+    return IngressStatus::sequence_exhausted;
+  }
+  if (logical_time < sequencer_.last_logical_time()) {
+    return IngressStatus::decreasing_logical_time;
   }
   if (producer_.available() == 0U) {
-    return PipelineStatus::ingress_backpressure;
+    return IngressStatus::queue_backpressure;
   }
   if (journal_.full()) {
-    return PipelineStatus::journal_full;
+    return IngressStatus::journal_full;
   }
 
   const auto command = sequencer_.stamp(payload, logical_time);
   if (!command.has_value()) {
-    if (command.error() == SequencerError::sequence_exhausted) {
-      poisoned_ = true;
-      return PipelineStatus::stopped_poisoned;
+    switch (command.error()) {
+    case SequencerError::invalid_payload:
+      return IngressStatus::invalid_payload;
+    case SequencerError::decreasing_logical_time:
+      return IngressStatus::decreasing_logical_time;
+    case SequencerError::sequence_exhausted:
+      return IngressStatus::sequence_exhausted;
     }
-    return PipelineStatus::invalid_command;
+    stopped_ = true;
+    return IngressStatus::stopped_poisoned;
   }
 
   // Durability always precedes visibility to the matcher. Any failure after
   // stamping stops this ingress instance so it cannot continue across a gap.
   last_journal_error_ = journal_.append(*command);
   if (last_journal_error_ != JournalError::none) {
-    poisoned_ = true;
-    return PipelineStatus::persistence_required;
+    recovery_required_ = true;
+    return last_journal_error_ == JournalError::commit_indeterminate
+               ? IngressStatus::commit_indeterminate
+               : IngressStatus::persistence_failure;
   }
   if (!producer_.try_push(*command)) {
-    poisoned_ = true;
-    return PipelineStatus::stopped_poisoned;
+    stopped_ = true;
+    return IngressStatus::stopped_poisoned;
   }
-  return PipelineStatus::progress;
+  return IngressStatus::progress;
 }
 
 MatchingStage::MatchingStage(std::unique_ptr<SequencedEngine> engine,
@@ -51,47 +70,78 @@ MatchingStage::MatchingStage(std::unique_ptr<SequencedEngine> engine,
     throw std::invalid_argument{"matching stage requires an engine"};
   }
   scratch_capacity_ = engine_->maximum_event_capacity();
+  if (events_.capacity() < scratch_capacity_) {
+    throw std::invalid_argument{"event queue cannot hold maximum engine event batch"};
+  }
   scratch_ = std::make_unique<EngineEvent[]>(scratch_capacity_);
 }
 
-PipelineStatus MatchingStage::process_one() noexcept {
+MatchingStatus MatchingStage::process_one() noexcept {
   if (poisoned_) {
-    return PipelineStatus::stopped_poisoned;
+    return MatchingStatus::poisoned;
   }
 
   SequencedCommand command{};
   if (!commands_.try_peek(command)) {
-    return PipelineStatus::input_empty;
+    return MatchingStatus::input_empty;
+  }
+  const auto poison = [this](MatchingStatus status) noexcept {
+    poisoned_ = true;
+    return status;
+  };
+  if (engine_->sequence_exhausted()) {
+    return poison(MatchingStatus::sequence_exhausted);
+  }
+  if (validate_command_payload(command.payload) != CommandValidationError::none) {
+    return poison(MatchingStatus::invalid_command);
+  }
+  if (command.sequence != engine_->next_sequence()) {
+    return poison(MatchingStatus::invalid_sequence);
+  }
+  if (command.logical_time < engine_->last_logical_time()) {
+    return poison(MatchingStatus::decreasing_logical_time);
   }
   const std::size_t required = engine_->required_event_capacity(command.payload);
-  if (required == 0U || required > scratch_capacity_) {
-    poisoned_ = true;
-    return PipelineStatus::stopped_poisoned;
+  if (required == 0U || required > scratch_capacity_ || required > events_.capacity()) {
+    return poison(MatchingStatus::impossible_event_capacity);
   }
   if (events_.available() < required) {
-    return PipelineStatus::output_backpressure;
+    return MatchingStatus::output_backpressure;
   }
 
   const ApplyResult result =
       engine_->apply(command, std::span<EngineEvent>{scratch_.get(), scratch_capacity_});
-  if (result.status != ApplyStatus::applied || result.event_count > required) {
-    poisoned_ = true;
-    return result.status == ApplyStatus::invalid_command ? PipelineStatus::invalid_command
-                                                         : PipelineStatus::stopped_poisoned;
-  }
-  for (std::size_t index = 0U; index < result.event_count; ++index) {
-    if (!events_.try_push(scratch_[index])) {
-      poisoned_ = true;
-      return PipelineStatus::stopped_poisoned;
+  if (result.status != ApplyStatus::applied) {
+    switch (result.status) {
+    case ApplyStatus::invalid_command:
+      return poison(MatchingStatus::invalid_command);
+    case ApplyStatus::invalid_sequence:
+      return poison(MatchingStatus::invalid_sequence);
+    case ApplyStatus::decreasing_logical_time:
+      return poison(MatchingStatus::decreasing_logical_time);
+    case ApplyStatus::sequence_exhausted:
+      return poison(MatchingStatus::sequence_exhausted);
+    case ApplyStatus::insufficient_event_capacity:
+      return poison(MatchingStatus::impossible_event_capacity);
+    case ApplyStatus::applied:
+      break;
     }
+  }
+  if (result.event_count == 0U || result.event_count > required) {
+    return poison(MatchingStatus::internal_invariant_failure);
+  }
+  if (!events_.try_push_batch(std::span<const EngineEvent>{scratch_.get(), result.event_count})) {
+    // Capacity was preflighted and this is the sole producer. Batch insertion
+    // therefore cannot fail unless queue ownership or an invariant is broken.
+    // The input remains retained so recovery cannot silently skip the command.
+    return poison(MatchingStatus::internal_invariant_failure);
   }
 
   SequencedCommand released{};
   if (!commands_.try_pop(released) || released != command) {
-    poisoned_ = true;
-    return PipelineStatus::stopped_poisoned;
+    return poison(MatchingStatus::internal_invariant_failure);
   }
-  return PipelineStatus::progress;
+  return MatchingStatus::progress;
 }
 
 SnapshotError MatchingStage::save_snapshot(const std::filesystem::path& path) {

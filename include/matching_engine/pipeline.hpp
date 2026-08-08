@@ -8,7 +8,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
+#include <type_traits>
 #include <utility>
 
 namespace matching_engine {
@@ -16,15 +18,35 @@ namespace matching_engine {
 using CommandQueue = SpscQueue<SequencedCommand>;
 using EventQueue = SpscQueue<EngineEvent>;
 
-enum class PipelineStatus : std::uint8_t {
+enum class IngressStatus : std::uint8_t {
+  progress,
+  invalid_payload,
+  decreasing_logical_time,
+  sequence_exhausted,
+  queue_backpressure,
+  journal_full,
+  persistence_failure,
+  commit_indeterminate,
+  recovery_required,
+  stopped_poisoned,
+};
+
+enum class MatchingStatus : std::uint8_t {
   progress,
   input_empty,
   output_backpressure,
-  ingress_backpressure,
-  journal_full,
-  persistence_required,
   invalid_command,
-  stopped_poisoned,
+  invalid_sequence,
+  decreasing_logical_time,
+  sequence_exhausted,
+  impossible_event_capacity,
+  internal_invariant_failure,
+  poisoned,
+};
+
+enum class PublicationStatus : std::uint8_t {
+  progress,
+  input_empty,
 };
 
 class DurableIngressStage {
@@ -32,8 +54,8 @@ public:
   DurableIngressStage(Sequencer sequencer, MmapJournal journal,
                       CommandQueue::Producer producer) noexcept;
 
-  [[nodiscard]] PipelineStatus try_ingest(const CommandPayload& payload,
-                                          std::uint64_t logical_time) noexcept;
+  [[nodiscard]] IngressStatus try_ingest(const CommandPayload& payload,
+                                         std::uint64_t logical_time) noexcept;
   [[nodiscard]] Sequence next_sequence() const noexcept {
     return sequencer_.next_sequence();
   }
@@ -44,7 +66,7 @@ public:
     return last_journal_error_;
   }
   [[nodiscard]] bool poisoned() const noexcept {
-    return poisoned_;
+    return recovery_required_ || stopped_;
   }
 #if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
   [[nodiscard]] const void* journal_identity_for_testing() const noexcept {
@@ -57,7 +79,8 @@ private:
   MmapJournal journal_;
   CommandQueue::Producer producer_;
   JournalError last_journal_error_{JournalError::none};
-  bool poisoned_{};
+  bool recovery_required_{};
+  bool stopped_{};
 };
 
 class MatchingStage {
@@ -65,7 +88,7 @@ public:
   MatchingStage(std::unique_ptr<SequencedEngine> engine, CommandQueue::Consumer commands,
                 EventQueue::Producer events);
 
-  [[nodiscard]] PipelineStatus process_one() noexcept;
+  [[nodiscard]] MatchingStatus process_one() noexcept;
   [[nodiscard]] SnapshotError save_snapshot(const std::filesystem::path& path);
   [[nodiscard]] SequencedEngine& engine() noexcept {
     return *engine_;
@@ -91,15 +114,17 @@ public:
   explicit PublicationStage(EventQueue::Consumer consumer) noexcept
       : consumer_{std::move(consumer)} {}
 
-  [[nodiscard]] PipelineStatus try_pop(EngineEvent& event) noexcept {
-    return consumer_.try_pop(event) ? PipelineStatus::progress : PipelineStatus::input_empty;
+  [[nodiscard]] PublicationStatus try_pop(EngineEvent& event) noexcept {
+    return consumer_.try_pop(event) ? PublicationStatus::progress : PublicationStatus::input_empty;
   }
 
-  template <typename Callback> [[nodiscard]] std::size_t drain(Callback&& callback) noexcept {
+  template <typename Callback>
+    requires std::is_nothrow_invocable_v<Callback&, const EngineEvent&>
+  [[nodiscard]] std::size_t drain(Callback&& callback) noexcept {
     std::size_t count{};
     EngineEvent event{};
     while (consumer_.try_pop(event)) {
-      callback(event);
+      std::invoke(callback, event);
       ++count;
     }
     return count;
