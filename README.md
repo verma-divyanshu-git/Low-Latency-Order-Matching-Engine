@@ -22,7 +22,9 @@ Phase 3B adds a benchmark-only open-loop order-book harness, atomic raw HdrHisto
 Phase 3C adds report-only Linux host qualification and a separate batch-amortized noisy-CI throughput regression gate with no latency claims.
 Phase 4A adds canonical fixed command bytes, caller-clocked sequencing, deterministic fixed event output, and a separate fixed-capacity memory-mapped command journal for macOS and Linux.
 Recovery detects torn or corrupt committed records and replays decoded command values without exposing mapping pointers.
-The journal has no snapshot, compaction, rotation, replication, or cryptographic authentication.
+Phase 4B adds versioned canonical engine snapshots, atomic replacement persistence, exact journal-boundary recovery, canonical event encoding, and a standalone deterministic replay verifier.
+Snapshots and replay fingerprints have CRC32C corruption detection but no cryptographic authentication.
+Journal compaction, rotation, and replication remain unimplemented.
 Steady-clock fallback can pass clock safety for local regression use but is always marked non-publishable.
 No latency or throughput claims should be inferred from this repository.
 
@@ -88,6 +90,7 @@ The [host qualification guide](docs/host-qualification.md) defines Linux environ
 The core target does not link measurement or persistence code, and `ENGINE_BUILD_BENCHMARKS` defaults to `OFF`.
 Applications opt into command persistence by linking `matching_engine::persistence`.
 The [journaling guide](docs/journaling.md) specifies canonical bytes, append-before-apply ordering, recovery, and durability limits.
+The [snapshot and replay guide](docs/snapshots-and-replay.md) specifies snapshot bytes, atomic replacement, restore validation, and verifier behavior.
 
 ## Benchmark contract
 
@@ -106,7 +109,7 @@ Future benchmark reports will:
 ## Limitations and non-goals
 
 - This is not production-ready trading software.
-- Command-journal persistence and recovery are implemented, but snapshots, compaction, networking, risk checks, authentication, authorization, administration, and operational monitoring are not.
+- Command-journal persistence, snapshots, and replay verification are implemented, but compaction, rotation, networking, risk checks, authentication, authorization, administration, and operational monitoring are not.
 - Duplicate order identifiers are not detected by the matching core and must be rejected by a future gateway.
 - Structural invariant checks do not prove volume conservation by themselves; the differential driver checks an independent conservation ledger, while self-trade prevention remains unimplemented.
 - Each order book requires exclusive access by one matching thread; concurrent calls are unsupported.
@@ -127,6 +130,7 @@ Future benchmark reports will:
 - [Order-book benchmarking methodology](docs/benchmarking.md)
 - [Linux host qualification and CI throughput gate](docs/host-qualification.md)
 - [Deterministic sequencing and command journaling](docs/journaling.md)
+- [Versioned snapshots and deterministic replay](docs/snapshots-and-replay.md)
 - [Primary references](docs/references.md)
 - [Security policy](SECURITY.md)
 

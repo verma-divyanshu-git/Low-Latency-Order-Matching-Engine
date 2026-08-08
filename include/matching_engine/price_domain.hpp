@@ -37,6 +37,9 @@ public:
   [[nodiscard]] std::uint32_t tick_count() const noexcept {
     return tick_count_;
   }
+  [[nodiscard]] Price minimum() const noexcept {
+    return minimum_;
+  }
 
 private:
   [[nodiscard]] static Price checked_maximum(Price minimum, std::uint32_t tick_count) {

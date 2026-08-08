@@ -79,8 +79,18 @@ public:
   [[nodiscard]] const OrderBook& order_book() const noexcept {
     return order_book_;
   }
+  [[nodiscard]] Sequence next_sequence() const noexcept {
+    return Sequence{next_sequence_};
+  }
+  [[nodiscard]] std::uint64_t last_logical_time() const noexcept {
+    return last_logical_time_;
+  }
+  [[nodiscard]] bool sequence_exhausted() const noexcept {
+    return sequence_exhausted_;
+  }
 
 private:
+  friend class detail::SnapshotCodec;
   [[nodiscard]] std::size_t maximum_event_count(const CommandPayload& payload) const noexcept;
   void write_submit_events(const SequencedCommand& command, const SubmitResult& result,
                            std::span<EngineEvent> events) noexcept;

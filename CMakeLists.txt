@@ -22,7 +22,11 @@ target_include_directories(
          $<INSTALL_INTERFACE:include>)
 engine_configure_target(matching_engine_core)
 
-add_library(matching_engine_persistence STATIC src/journal.cpp)
+add_library(
+  matching_engine_persistence STATIC
+  src/journal.cpp
+  src/replay.cpp
+  src/snapshot.cpp)
 add_library(matching_engine::persistence ALIAS matching_engine_persistence)
 target_include_directories(
   matching_engine_persistence
@@ -30,6 +34,10 @@ target_include_directories(
          $<INSTALL_INTERFACE:include>)
 target_link_libraries(matching_engine_persistence PUBLIC matching_engine::core)
 engine_configure_target(matching_engine_persistence)
+
+add_executable(matching_engine_replay src/replay_cli.cpp)
+target_link_libraries(matching_engine_replay PRIVATE matching_engine::persistence)
+engine_configure_target(matching_engine_replay)
 
 if(PROJECT_IS_TOP_LEVEL)
   set(ENGINE_BUILD_TESTS_DEFAULT ON)
@@ -132,7 +140,11 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
   include(GoogleTest)
   gtest_discover_tests(matching_engine_core_tests)
 
-  add_library(matching_engine_persistence_test STATIC src/journal.cpp)
+  add_library(
+    matching_engine_persistence_test STATIC
+    src/journal.cpp
+    src/replay.cpp
+    src/snapshot.cpp)
   target_include_directories(
     matching_engine_persistence_test
     PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
@@ -141,13 +153,26 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
   target_link_libraries(matching_engine_persistence_test PUBLIC matching_engine::core)
   engine_configure_target(matching_engine_persistence_test)
 
-  add_executable(matching_engine_persistence_tests tests/journal_test.cpp)
+  add_executable(
+    matching_engine_persistence_tests
+    tests/journal_test.cpp
+    tests/snapshot_replay_test.cpp)
   target_compile_definitions(
     matching_engine_persistence_tests PRIVATE MATCHING_ENGINE_TEST_FAILPOINTS)
   target_link_libraries(
     matching_engine_persistence_tests PRIVATE matching_engine_persistence_test GTest::gtest_main)
   engine_configure_target(matching_engine_persistence_tests)
   gtest_discover_tests(matching_engine_persistence_tests)
+
+  add_executable(matching_engine_replay_cli_tests tests/replay_cli_test.cpp)
+  target_compile_definitions(
+    matching_engine_replay_cli_tests
+    PRIVATE MATCHING_ENGINE_REPLAY_PATH="$<TARGET_FILE:matching_engine_replay>")
+  target_link_libraries(
+    matching_engine_replay_cli_tests PRIVATE matching_engine::persistence GTest::gtest_main)
+  add_dependencies(matching_engine_replay_cli_tests matching_engine_replay)
+  engine_configure_target(matching_engine_replay_cli_tests)
+  gtest_discover_tests(matching_engine_replay_cli_tests)
 
   if(ENGINE_BUILD_BENCHMARKS)
     add_executable(

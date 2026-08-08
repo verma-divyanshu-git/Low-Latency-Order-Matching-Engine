@@ -15,6 +15,8 @@ class OrderBook;
 
 namespace detail {
 
+class SnapshotCodec;
+
 [[nodiscard]] constexpr std::uint32_t next_generation(std::uint32_t generation) noexcept {
   return generation == std::numeric_limits<std::uint32_t>::max() ? 1U : generation + 1U;
 }
@@ -104,6 +106,7 @@ public:
 
 private:
   friend class OrderBook;
+  friend class detail::SnapshotCodec;
 
   struct Slot {
     Order order{

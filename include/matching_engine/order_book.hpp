@@ -183,6 +183,7 @@ public:
   [[nodiscard]] InvariantResult check_invariants() noexcept;
 
 private:
+  friend class detail::SnapshotCodec;
   [[nodiscard]] static PriceDomain checked_domain(PriceDomain domain);
   [[nodiscard]] static std::uint32_t checked_max_quantity(Quantity quantity);
   [[nodiscard]] RejectReason preflight(Side side, Quantity quantity) const noexcept;
