@@ -20,3 +20,4 @@ A new record supersedes a decision when the architecture changes.
 - [ADR-0011: Host qualification and noisy-CI regression gate](0011-host-qualification-and-ci-regression-gate.md)
 - [ADR-0012: Deterministic command boundary and fixed-capacity journal](0012-deterministic-command-journal.md)
 - [ADR-0013: Versioned snapshots and deterministic replay verification](0013-versioned-snapshots-and-replay-verification.md)
+- [ADR-0014: Bounded SPSC durable matching pipeline](0014-bounded-spsc-durable-pipeline.md)

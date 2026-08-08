@@ -23,6 +23,8 @@ These primary and project-authoritative sources inform the Phase 0 foundation an
 ## Architecture and interfaces
 
 - [C++ memory model](https://eel.is/c++draft/intro.races)
+- [Rigtorp SPSCQueue](https://github.com/rigtorp/SPSCQueue)
+- [1024cores bounded SPSC queue](https://www.1024cores.net/home/lock-free-algorithms/queues/bounded-spsc-queue)
 - [gRPC core concepts](https://grpc.io/docs/what-is-grpc/core-concepts/)
 
 ## Matching rules and protocols

@@ -73,6 +73,10 @@ public:
 
   [[nodiscard]] ApplyResult apply(const SequencedCommand& command,
                                   std::span<EngineEvent> events) noexcept;
+  [[nodiscard]] std::size_t required_event_capacity(const CommandPayload& payload) const noexcept;
+  [[nodiscard]] std::size_t maximum_event_capacity() const noexcept {
+    return trade_capacity_ + 1U;
+  }
   [[nodiscard]] OrderBook& order_book() noexcept {
     return order_book_;
   }
@@ -91,7 +95,6 @@ public:
 
 private:
   friend class detail::SnapshotCodec;
-  [[nodiscard]] std::size_t maximum_event_count(const CommandPayload& payload) const noexcept;
   void write_submit_events(const SequencedCommand& command, const SubmitResult& result,
                            std::span<EngineEvent> events) noexcept;
 

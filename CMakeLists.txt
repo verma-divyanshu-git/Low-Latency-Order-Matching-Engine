@@ -25,6 +25,7 @@ engine_configure_target(matching_engine_core)
 add_library(
   matching_engine_persistence STATIC
   src/journal.cpp
+  src/pipeline.cpp
   src/replay.cpp
   src/snapshot.cpp)
 add_library(matching_engine::persistence ALIAS matching_engine_persistence)
@@ -97,6 +98,14 @@ if(ENGINE_BUILD_BENCHMARKS)
   target_link_libraries(order_book_benchmark PRIVATE matching_engine::benchmark)
   engine_configure_target(order_book_benchmark)
 
+  add_executable(spsc_queue_benchmark src/spsc_queue_benchmark.cpp)
+  target_link_libraries(spsc_queue_benchmark PRIVATE matching_engine::core)
+  engine_configure_target(spsc_queue_benchmark)
+
+  add_executable(pipeline_throughput_benchmark src/pipeline_throughput_benchmark.cpp)
+  target_link_libraries(pipeline_throughput_benchmark PRIVATE matching_engine::persistence)
+  engine_configure_target(pipeline_throughput_benchmark)
+
   add_executable(order_book_throughput_gate src/order_book_throughput_gate.cpp)
   target_link_libraries(order_book_throughput_gate PRIVATE matching_engine::throughput_gate)
   engine_configure_target(order_book_throughput_gate)
@@ -133,16 +142,25 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
     tests/order_book_differential_test.cpp
     tests/order_book_test.cpp
     tests/price_domain_bitmap_test.cpp
-    tests/reference_order_book_test.cpp)
+    tests/reference_order_book_test.cpp
+    tests/spsc_queue_test.cpp)
+  target_compile_definitions(
+    matching_engine_core_tests PRIVATE MATCHING_ENGINE_TEST_SEAMS)
   target_link_libraries(matching_engine_core_tests PRIVATE matching_engine::core GTest::gtest_main)
   engine_configure_target(matching_engine_core_tests)
 
   include(GoogleTest)
   gtest_discover_tests(matching_engine_core_tests)
 
+  add_executable(spsc_queue_allocation_test tests/spsc_queue_allocation_test.cpp)
+  target_link_libraries(spsc_queue_allocation_test PRIVATE matching_engine::core)
+  engine_configure_target(spsc_queue_allocation_test)
+  add_test(NAME spsc_queue_allocation_test COMMAND spsc_queue_allocation_test)
+
   add_library(
     matching_engine_persistence_test STATIC
     src/journal.cpp
+    src/pipeline.cpp
     src/replay.cpp
     src/snapshot.cpp)
   target_include_directories(
@@ -156,6 +174,7 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
   add_executable(
     matching_engine_persistence_tests
     tests/journal_test.cpp
+    tests/pipeline_test.cpp
     tests/snapshot_replay_test.cpp)
   target_compile_definitions(
     matching_engine_persistence_tests PRIVATE MATCHING_ENGINE_TEST_FAILPOINTS)

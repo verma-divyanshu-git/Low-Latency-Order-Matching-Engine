@@ -131,6 +131,12 @@ public:
   [[nodiscard]] std::uint64_t size() const noexcept {
     return size_;
   }
+  [[nodiscard]] bool full() const noexcept {
+    return size_ == capacity_;
+  }
+  [[nodiscard]] bool writable() const noexcept {
+    return descriptor_ >= 0 && mapping_ != nullptr && !writer_poisoned_;
+  }
 
 private:
   MmapJournal(int descriptor, std::byte* mapping, std::size_t mapping_size,

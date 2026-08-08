@@ -33,7 +33,7 @@ SequencedEngine::SequencedEngine(PriceDomain domain, std::size_t max_orders,
   }
 }
 
-std::size_t SequencedEngine::maximum_event_count(const CommandPayload& payload) const noexcept {
+std::size_t SequencedEngine::required_event_capacity(const CommandPayload& payload) const noexcept {
   switch (payload.tag) {
   case CommandType::submit_limit:
     return order_book_.preflight_limit(payload.side, Price{payload.price_ticks},
@@ -84,7 +84,7 @@ ApplyResult SequencedEngine::apply(const SequencedCommand& command,
   if (command.logical_time < last_logical_time_) {
     return {ApplyStatus::decreasing_logical_time, 0U};
   }
-  const std::size_t required = maximum_event_count(command.payload);
+  const std::size_t required = required_event_capacity(command.payload);
   if (events.size() < required) {
     return {ApplyStatus::insufficient_event_capacity, 0U};
   }

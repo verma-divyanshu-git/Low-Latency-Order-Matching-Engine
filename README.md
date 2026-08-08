@@ -24,30 +24,24 @@ Phase 4A adds canonical fixed command bytes, caller-clocked sequencing, determin
 Recovery detects torn or corrupt committed records and replays decoded command values without exposing mapping pointers.
 Phase 4B adds versioned canonical engine snapshots, atomic replacement persistence, exact journal-boundary recovery, canonical event encoding, and a standalone deterministic replay verifier.
 Snapshots and replay fingerprints have CRC32C corruption detection but no cryptographic authentication.
+Phase 5A adds an exact-capacity allocation-free SPSC queue and non-thread-owning durable ingress, single-writer matching, and ordered publication stages.
+Ingress appends before publication, matching preflights complete event-batch capacity before mutation, and persistence or sequence uncertainty poisons the affected stage.
 Journal compaction, rotation, and replication remain unimplemented.
 Steady-clock fallback can pass clock safety for local regression use but is always marked non-publishable.
 No latency or throughput claims should be inferred from this repository.
 
-## Planned architecture
+## Pipeline architecture
 
 ```mermaid
 flowchart LR
-  P1[Producer 1] --> L1[SPSC lane 1]
-  P2[Producer 2] --> L2[SPSC lane 2]
-  PN[Producer N] --> LN[SPSC lane N]
-  L1 --> M[Deterministic merge and sequencer]
-  L2 --> M
-  LN --> M
-  M --> E[Single-writer matching engine]
-  E --> O1[Execution reports]
-  E --> O2[Market-data events]
-  O1 --> C1[Consumer SPSC lane]
-  O2 --> C2[Consumer SPSC lane]
+  I[Durable ingress] -->|SequencedCommand SPSC| M[Single-writer matching]
+  M -->|EngineEvent SPSC| P[Ordered publication]
+  I --> J[Mmap journal]
 ```
 
-Each producer is planned to own one single-producer, single-consumer lane.
-A deterministic merge stage will assign the total order consumed by the single-writer matching core.
-This avoids presenting a multi-producer ring as if concurrent arrival order were inherently deterministic.
+Stages do not own threads or waiting policy.
+Production code can pin externally owned threads, while deterministic tests control scheduling directly.
+Additional producer lanes and deterministic merge remain future work.
 
 ## Design direction
 
@@ -91,6 +85,7 @@ The core target does not link measurement or persistence code, and `ENGINE_BUILD
 Applications opt into command persistence by linking `matching_engine::persistence`.
 The [journaling guide](docs/journaling.md) specifies canonical bytes, append-before-apply ordering, recovery, and durability limits.
 The [snapshot and replay guide](docs/snapshots-and-replay.md) specifies snapshot bytes, atomic replacement, restore validation, and verifier behavior.
+The [pipeline guide](docs/pipeline.md) specifies SPSC memory ordering, stage ownership, backpressure, poisoning, snapshots, shutdown, and benchmark interpretation.
 
 ## Benchmark contract
 
@@ -133,6 +128,7 @@ Future benchmark reports will:
 - [Linux host qualification and CI throughput gate](docs/host-qualification.md)
 - [Deterministic sequencing and command journaling](docs/journaling.md)
 - [Versioned snapshots and deterministic replay](docs/snapshots-and-replay.md)
+- [Durable three-stage pipeline](docs/pipeline.md)
 - [Primary references](docs/references.md)
 - [Security policy](SECURITY.md)
 
