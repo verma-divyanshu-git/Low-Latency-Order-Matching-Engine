@@ -21,8 +21,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Ubuntu 22.04 x86_64
-            os: ubuntu-22.04
+          - name: Ubuntu 24.04 x86_64
+            os: ubuntu-24.04
             architecture: x86_64
           - name: macOS 14 arm64
             os: macos-14
@@ -59,8 +59,8 @@ jobs:
         run: ctest --preset release
 
   sanitizer:
-    name: Ubuntu 22.04 ${{ matrix.name }}
-    runs-on: ubuntu-22.04
+    name: Ubuntu 24.04 ${{ matrix.name }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -70,6 +70,8 @@ jobs:
             preset: asan
           - name: UBSan
             preset: ubsan
+          - name: TSan
+            preset: tsan
 
     steps:
       - name: Check out source
@@ -90,8 +92,8 @@ jobs:
         run: ctest --preset ${{ matrix.preset }}
 
   throughput-regression:
-    name: Ubuntu 22.04 Release batch throughput regression
-    runs-on: ubuntu-22.04
+    name: Ubuntu 24.04 Release batch throughput regression
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
@@ -118,8 +120,8 @@ jobs:
             --max-relative-mad 0.25
 
   fuzz:
-    name: Ubuntu 22.04 Clang fuzz smoke
-    runs-on: ubuntu-22.04
+    name: Ubuntu 24.04 Clang fuzz smoke
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:

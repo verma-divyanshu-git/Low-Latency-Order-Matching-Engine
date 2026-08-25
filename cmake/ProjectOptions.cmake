@@ -8,6 +8,33 @@ option(ENGINE_ENABLE_TSAN "Enable ThreadSanitizer" OFF)
 option(ENGINE_ENABLE_FUZZING "Enable libFuzzer instrumentation" OFF)
 
 function(engine_validate_options)
+  if(MSVC)
+    set(CMAKE_REQUIRED_FLAGS "/std:c++latest")
+  else()
+    set(CMAKE_REQUIRED_FLAGS "-std=c++23")
+  endif()
+  check_cxx_source_compiles(
+    [=[
+      #include <expected>
+      #include <version>
+
+      #if !defined(__cpp_lib_expected) || __cpp_lib_expected < 202202L
+      #error "C++23 std::expected is unavailable"
+      #endif
+
+      int main() {
+        const std::expected<int, int> result{1};
+        return *result - 1;
+      }
+    ]=]
+    ENGINE_HAS_CXX23_EXPECTED)
+  if(NOT ENGINE_HAS_CXX23_EXPECTED)
+    message(
+      FATAL_ERROR
+        "The selected C++23 standard library does not provide std::expected; use GCC 12+, Clang with a compatible modern standard library, or Apple Clang 15+"
+    )
+  endif()
+
   set(sanitizer_count 0)
   foreach(option_name ENGINE_ENABLE_ASAN ENGINE_ENABLE_UBSAN ENGINE_ENABLE_TSAN)
     if(${option_name})
