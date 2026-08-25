@@ -14,8 +14,9 @@ add_library(
   matching_engine_core STATIC
   src/bbo.cpp
   src/command.cpp
+  src/gateway.cpp
   src/order_book.cpp
-    src/runtime_controls.cpp
+  src/runtime_controls.cpp
   src/sequenced_engine.cpp)
 add_library(matching_engine::core ALIAS matching_engine_core)
 target_include_directories(
@@ -139,6 +140,7 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
   add_executable(
     matching_engine_core_tests
     tests/bbo_test.cpp
+    tests/gateway_test.cpp
     tests/command_engine_test.cpp
     tests/invariant_test.cpp
     tests/order_arena_test.cpp
