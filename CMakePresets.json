@@ -61,6 +61,7 @@
       },
       "cacheVariables": {
         "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_CXX_FLAGS": "-stdlib=libc++",
         "ENGINE_ENABLE_FUZZING": "ON"
       }
     },
