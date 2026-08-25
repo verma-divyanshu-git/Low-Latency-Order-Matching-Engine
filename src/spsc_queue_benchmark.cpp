@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <exception>
 #include <iostream>
-#include <stop_token>
 #include <thread>
 
 namespace {
@@ -55,52 +54,57 @@ int run_benchmark() {
   std::atomic<bool> start{};
   std::atomic<bool> completed{};
   std::atomic<bool> failed{};
-  std::stop_source stop;
+  std::atomic<bool> stop_requested{};
   std::uint64_t handoff_checksum{};
-  std::jthread watchdog{[&](const std::stop_token& token) {
+  const auto stopped = [&] {
+    return stop_requested.load(std::memory_order_acquire);
+  };
+  std::thread watchdog{[&] {
     const auto deadline = Clock::now() + std::chrono::seconds{30};
-    while (!token.stop_requested() && !completed.load(std::memory_order_acquire) &&
+    while (!stopped() && !completed.load(std::memory_order_acquire) &&
            Clock::now() < deadline) {
       std::this_thread::sleep_for(std::chrono::milliseconds{10});
     }
-    if (!completed.load(std::memory_order_acquire) && !token.stop_requested()) {
+    if (!completed.load(std::memory_order_acquire) && !stopped()) {
       failed.store(true, std::memory_order_release);
-      stop.request_stop();
+      stop_requested.store(true, std::memory_order_release);
     }
   }};
   const std::uint64_t handoff_ns = elapsed_ns([&] {
-    std::jthread producer{[endpoint = std::move(*handoff_producer), &start, &stop]() mutable {
-      while (!start.load(std::memory_order_acquire) && !stop.stop_requested()) {
+    std::thread producer{[endpoint = std::move(*handoff_producer), &start, &stopped]() mutable {
+      while (!start.load(std::memory_order_acquire) && !stopped()) {
         std::this_thread::yield();
       }
-      for (std::uint64_t value = 0U; value < kOperations && !stop.stop_requested(); ++value) {
-        while (!endpoint.try_push(value) && !stop.stop_requested()) {
+      for (std::uint64_t value = 0U; value < kOperations && !stopped(); ++value) {
+        while (!endpoint.try_push(value) && !stopped()) {
           std::this_thread::yield();
         }
       }
     }};
-    std::jthread consumer{[endpoint = std::move(*handoff_consumer), &start, &stop, &failed,
-                           &handoff_checksum]() mutable {
+    std::thread consumer{[endpoint = std::move(*handoff_consumer), &start, &stop_requested, &stopped,
+                          &failed, &handoff_checksum]() mutable {
       start.store(true, std::memory_order_release);
-      for (std::uint64_t index = 0U; index < kOperations && !stop.stop_requested(); ++index) {
+      for (std::uint64_t index = 0U; index < kOperations && !stopped(); ++index) {
         std::uint64_t value{};
-        while (!endpoint.try_pop(value) && !stop.stop_requested()) {
+        while (!endpoint.try_pop(value) && !stopped()) {
           std::this_thread::yield();
         }
-        if (stop.stop_requested()) {
+        if (stopped()) {
           break;
         }
         if (value != index) {
           failed.store(true, std::memory_order_release);
-          stop.request_stop();
+          stop_requested.store(true, std::memory_order_release);
           break;
         }
         handoff_checksum += value;
       }
     }};
+    producer.join();
+    consumer.join();
   });
   completed.store(true, std::memory_order_release);
-  watchdog.request_stop();
+  stop_requested.store(true, std::memory_order_release);
   watchdog.join();
 
   std::cout << "{\"benchmark\":\"spsc_queue\",\"operations\":" << kOperations

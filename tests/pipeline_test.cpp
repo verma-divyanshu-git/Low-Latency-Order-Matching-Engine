@@ -451,30 +451,33 @@ TEST(PipelineThreadedTest, MixedValidWorkloadMatchesReferenceExactly) {
       std::move(*command_consumer), std::move(*event_producer)};
   PublicationStage publication{std::move(*event_consumer)};
 
-  std::stop_source stop;
+  std::atomic<bool> stop_requested{};
   std::atomic<bool> ingress_done{};
   std::atomic<bool> matching_done{};
   std::atomic<bool> completed{};
   std::atomic<bool> failed{};
   const auto fail = [&] {
     failed.store(true, std::memory_order_release);
-    stop.request_stop();
+    stop_requested.store(true, std::memory_order_release);
+  };
+  const auto stopped = [&] {
+    return stop_requested.load(std::memory_order_acquire);
   };
   std::vector<EngineEvent> actual;
   actual.reserve(expected.size());
-  std::jthread watchdog{[&](const std::stop_token& token) {
+  std::thread watchdog{[&] {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
-    while (!token.stop_requested() && !completed.load(std::memory_order_acquire) &&
+    while (!stopped() && !completed.load(std::memory_order_acquire) &&
            std::chrono::steady_clock::now() < deadline) {
       std::this_thread::sleep_for(std::chrono::milliseconds{10});
     }
-    if (!completed.load(std::memory_order_acquire) && !token.stop_requested()) {
+    if (!completed.load(std::memory_order_acquire) && !stopped()) {
       fail();
     }
   }};
-  std::jthread ingress_thread{[&] {
+  std::thread ingress_thread{[&] {
     std::size_t index{};
-    while (index < payloads.size() && !stop.stop_requested()) {
+    while (index < payloads.size() && !stopped()) {
       const IngressStatus status = ingress.try_ingest(payloads[index], index + 1U);
       if (status == IngressStatus::progress) {
         ++index;
@@ -484,14 +487,14 @@ TEST(PipelineThreadedTest, MixedValidWorkloadMatchesReferenceExactly) {
         std::this_thread::yield();
       }
     }
-    if (index != payloads.size() && !stop.stop_requested()) {
+    if (index != payloads.size() && !stopped()) {
       fail();
     }
     ingress_done.store(true, std::memory_order_release);
   }};
-  std::jthread matching_thread{[&] {
+  std::thread matching_thread{[&] {
     while ((!ingress_done.load(std::memory_order_acquire) || !commands.empty()) &&
-           !stop.stop_requested()) {
+           !stopped()) {
       const MatchingStatus status = matching.process_one();
       if (status != MatchingStatus::progress && status != MatchingStatus::input_empty &&
           status != MatchingStatus::output_backpressure) {
@@ -500,17 +503,17 @@ TEST(PipelineThreadedTest, MixedValidWorkloadMatchesReferenceExactly) {
         std::this_thread::yield();
       }
     }
-    if (!commands.empty() && !stop.stop_requested()) {
+    if (!commands.empty() && !stopped()) {
       fail();
     }
     matching_done.store(true, std::memory_order_release);
   }};
-  std::jthread publication_thread{[&] {
+  std::thread publication_thread{[&] {
     while (!matching_done.load(std::memory_order_acquire) || !events.empty()) {
       EngineEvent event{};
       if (publication.try_pop(event) == PublicationStatus::progress) {
         actual.push_back(event);
-      } else if (stop.stop_requested() && matching_done.load(std::memory_order_acquire)) {
+      } else if (stopped() && matching_done.load(std::memory_order_acquire)) {
         break;
       } else {
         std::this_thread::yield();
@@ -524,7 +527,7 @@ TEST(PipelineThreadedTest, MixedValidWorkloadMatchesReferenceExactly) {
   matching_thread.join();
   publication_thread.join();
   completed.store(true, std::memory_order_release);
-  watchdog.request_stop();
+  stop_requested.store(true, std::memory_order_release);
   watchdog.join();
 
   ASSERT_FALSE(failed.load(std::memory_order_acquire));
@@ -570,48 +573,51 @@ TEST(PipelineThreadedTest, InjectedMatcherFailureStopsPeersAndDrainsPublishedEve
       std::make_unique<SequencedEngine>(PriceDomain{Price{100}, 1U}, 1U, Quantity{10U}),
       std::move(*command_consumer), std::move(*event_producer)};
   PublicationStage publication{std::move(*event_consumer)};
-  std::stop_source stop;
+  std::atomic<bool> stop_requested{};
   std::atomic<bool> ingress_stopped{};
   std::atomic<bool> matching_done{};
   std::atomic<bool> completed{};
   std::atomic<bool> failed{};
   std::atomic<std::size_t> published{};
-  std::jthread watchdog{[&](const std::stop_token& token) {
+  const auto stopped = [&] {
+    return stop_requested.load(std::memory_order_acquire);
+  };
+  std::thread watchdog{[&] {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
-    while (!token.stop_requested() && !completed.load(std::memory_order_acquire) &&
+    while (!stopped() && !completed.load(std::memory_order_acquire) &&
            std::chrono::steady_clock::now() < deadline) {
       std::this_thread::sleep_for(std::chrono::milliseconds{10});
     }
-    if (!completed.load(std::memory_order_acquire) && !token.stop_requested()) {
+    if (!completed.load(std::memory_order_acquire) && !stopped()) {
       failed.store(true, std::memory_order_release);
-      stop.request_stop();
+      stop_requested.store(true, std::memory_order_release);
     }
   }};
-  std::jthread ingress_thread{
-      [endpoint = std::move(*command_producer), &stop, &failed, &ingress_stopped]() mutable {
+  std::thread ingress_thread{
+      [endpoint = std::move(*command_producer), &stop_requested, &failed, &ingress_stopped]() mutable {
         if (!endpoint.try_push({CommandPayload::submit_market(OrderId{1U}, Side::buy, Quantity{1U}),
                                 Sequence{2U}, 1U})) {
           failed.store(true, std::memory_order_release);
-          stop.request_stop();
+          stop_requested.store(true, std::memory_order_release);
         }
-        while (!stop.stop_requested()) {
+        while (!stop_requested.load(std::memory_order_acquire)) {
           std::this_thread::yield();
         }
         ingress_stopped.store(true, std::memory_order_release);
       }};
-  std::jthread matching_thread{[&] {
-    while (!stop.stop_requested()) {
+  std::thread matching_thread{[&] {
+    while (!stopped()) {
       const MatchingStatus status = matching.process_one();
       if (status == MatchingStatus::invalid_sequence) {
-        stop.request_stop();
+        stop_requested.store(true, std::memory_order_release);
       } else if (status != MatchingStatus::input_empty) {
         failed.store(true, std::memory_order_release);
-        stop.request_stop();
+        stop_requested.store(true, std::memory_order_release);
       }
     }
     matching_done.store(true, std::memory_order_release);
   }};
-  std::jthread publication_thread{[&] {
+  std::thread publication_thread{[&] {
     while (!matching_done.load(std::memory_order_acquire) || !events.empty()) {
       EngineEvent event{};
       if (publication.try_pop(event) == PublicationStatus::progress) {
@@ -625,7 +631,7 @@ TEST(PipelineThreadedTest, InjectedMatcherFailureStopsPeersAndDrainsPublishedEve
   matching_thread.join();
   publication_thread.join();
   completed.store(true, std::memory_order_release);
-  watchdog.request_stop();
+  stop_requested.store(true, std::memory_order_release);
   watchdog.join();
 
   EXPECT_FALSE(failed.load(std::memory_order_acquire));

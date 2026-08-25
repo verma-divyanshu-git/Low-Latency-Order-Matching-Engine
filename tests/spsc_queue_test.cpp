@@ -7,7 +7,6 @@
 #include <gtest/gtest.h>
 #include <limits>
 #include <span>
-#include <stop_token>
 #include <thread>
 #include <type_traits>
 
@@ -145,52 +144,56 @@ TEST(SpscQueueBatchTest, ConsumerNeverObservesPartialPublishedBatch) {
   auto producer = queue.claim_producer();
   auto consumer = queue.claim_consumer();
   ASSERT_TRUE(producer && consumer);
-  std::stop_source stop;
+  std::atomic<bool> stop_requested{};
   std::atomic<bool> failed{};
   std::atomic<bool> done{};
-  std::jthread watchdog{[&](const std::stop_token& token) {
+  const auto stopped = [&] {
+    return stop_requested.load(std::memory_order_acquire);
+  };
+  std::thread watchdog{[&] {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
-    while (!token.stop_requested() && !done.load(std::memory_order_acquire) &&
+    while (!stopped() && !done.load(std::memory_order_acquire) &&
            std::chrono::steady_clock::now() < deadline) {
       std::this_thread::sleep_for(std::chrono::milliseconds{10});
     }
-    if (!done.load(std::memory_order_acquire) && !token.stop_requested()) {
+    if (!done.load(std::memory_order_acquire) && !stopped()) {
       failed.store(true, std::memory_order_release);
-      stop.request_stop();
+      stop_requested.store(true, std::memory_order_release);
     }
   }};
 
-  std::jthread producer_thread{[endpoint = std::move(*producer), &stop]() mutable {
+  std::thread producer_thread{[endpoint = std::move(*producer), &stopped]() mutable {
     std::array<Item, batch_size> batch{};
-    for (std::uint64_t batch_id = 0U; batch_id < batch_count && !stop.stop_requested();
+    for (std::uint64_t batch_id = 0U; batch_id < batch_count && !stopped();
          ++batch_id) {
       for (std::size_t offset = 0U; offset < batch.size(); ++offset) {
         batch[offset] = {batch_id, offset};
       }
-      while (!endpoint.try_push_batch(batch) && !stop.stop_requested()) {
+      while (!endpoint.try_push_batch(batch) && !stopped()) {
         std::this_thread::yield();
       }
     }
   }};
-  std::jthread consumer_thread{[endpoint = std::move(*consumer), &stop, &failed, &done]() mutable {
-    for (std::uint64_t batch_id = 0U; batch_id < batch_count && !stop.stop_requested();
+  std::thread consumer_thread{[endpoint = std::move(*consumer), &stop_requested, &stopped, &failed,
+                              &done]() mutable {
+    for (std::uint64_t batch_id = 0U; batch_id < batch_count && !stopped();
          ++batch_id) {
       Item item{};
-      while (!endpoint.try_pop(item) && !stop.stop_requested()) {
+      while (!endpoint.try_pop(item) && !stopped()) {
         std::this_thread::yield();
       }
-      if (stop.stop_requested()) {
+      if (stopped()) {
         break;
       }
       if (item != Item{batch_id, 0U}) {
         failed.store(true, std::memory_order_release);
-        stop.request_stop();
+        stop_requested.store(true, std::memory_order_release);
         break;
       }
       for (std::size_t offset = 1U; offset < batch_size; ++offset) {
         if (!endpoint.try_pop(item) || item != Item{batch_id, offset}) {
           failed.store(true, std::memory_order_release);
-          stop.request_stop();
+          stop_requested.store(true, std::memory_order_release);
           break;
         }
       }
@@ -200,7 +203,7 @@ TEST(SpscQueueBatchTest, ConsumerNeverObservesPartialPublishedBatch) {
   producer_thread.join();
   consumer_thread.join();
   done.store(true, std::memory_order_release);
-  watchdog.request_stop();
+  stop_requested.store(true, std::memory_order_release);
   watchdog.join();
   EXPECT_FALSE(failed.load(std::memory_order_acquire));
 }
@@ -220,45 +223,49 @@ TEST(SpscQueueTest, TransfersOneMillionVisiblePayloads) {
   std::atomic<bool> start{};
   std::atomic<bool> failed{};
   std::atomic<bool> done{};
-  std::stop_source stop;
+  std::atomic<bool> stop_requested{};
+  const auto stopped = [&] {
+    return stop_requested.load(std::memory_order_acquire);
+  };
   constexpr std::uint64_t count = 1'000'000U;
-  std::jthread watchdog{[&](const std::stop_token& token) {
+  std::thread watchdog{[&] {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
-    while (!token.stop_requested() && !done.load(std::memory_order_acquire) &&
+    while (!stopped() && !done.load(std::memory_order_acquire) &&
            std::chrono::steady_clock::now() < deadline) {
       std::this_thread::sleep_for(std::chrono::milliseconds{10});
     }
-    if (!done.load(std::memory_order_acquire) && !token.stop_requested()) {
+    if (!done.load(std::memory_order_acquire) && !stopped()) {
       failed.store(true, std::memory_order_release);
-      stop.request_stop();
+      stop_requested.store(true, std::memory_order_release);
     }
   }};
 
-  std::jthread producer_thread{[endpoint = std::move(*producer), &start, &stop]() mutable {
-    while (!start.load(std::memory_order_acquire) && !stop.stop_requested()) {
+  std::thread producer_thread{[endpoint = std::move(*producer), &start, &stopped]() mutable {
+    while (!start.load(std::memory_order_acquire) && !stopped()) {
       std::this_thread::yield();
     }
-    for (std::uint64_t value = 0U; value < count && !stop.stop_requested(); ++value) {
+    for (std::uint64_t value = 0U; value < count && !stopped(); ++value) {
       const Payload payload{value, ~value};
-      while (!endpoint.try_push(payload) && !stop.stop_requested()) {
+      while (!endpoint.try_push(payload) && !stopped()) {
         std::this_thread::yield();
       }
     }
   }};
-  std::jthread consumer_thread{
-      [endpoint = std::move(*consumer), &start, &stop, &failed, &done]() mutable {
+  std::thread consumer_thread{
+      [endpoint = std::move(*consumer), &start, &stop_requested, &stopped, &failed,
+       &done]() mutable {
         start.store(true, std::memory_order_release);
-        for (std::uint64_t expected = 0U; expected < count && !stop.stop_requested(); ++expected) {
+        for (std::uint64_t expected = 0U; expected < count && !stopped(); ++expected) {
           Payload payload{};
-          while (!endpoint.try_pop(payload) && !stop.stop_requested()) {
+          while (!endpoint.try_pop(payload) && !stopped()) {
             std::this_thread::yield();
           }
-          if (stop.stop_requested()) {
+          if (stopped()) {
             break;
           }
           if (payload.sequence != expected || payload.complement != ~expected) {
             failed.store(true, std::memory_order_release);
-            stop.request_stop();
+            stop_requested.store(true, std::memory_order_release);
             break;
           }
         }
@@ -267,7 +274,7 @@ TEST(SpscQueueTest, TransfersOneMillionVisiblePayloads) {
   producer_thread.join();
   consumer_thread.join();
   done.store(true, std::memory_order_release);
-  watchdog.request_stop();
+  stop_requested.store(true, std::memory_order_release);
   watchdog.join();
   EXPECT_FALSE(failed.load(std::memory_order_acquire));
 }
