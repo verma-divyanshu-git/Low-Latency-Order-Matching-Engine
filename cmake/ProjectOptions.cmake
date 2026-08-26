@@ -29,6 +29,15 @@ function(engine_validate_options)
     ]=]
     ENGINE_HAS_CXX23_EXPECTED)
   if(NOT ENGINE_HAS_CXX23_EXPECTED)
+    file(WRITE "${CMAKE_BINARY_DIR}/CMakeFiles/expected_probe.cpp"
+         "#include <expected>\n#include <version>\nint main() { const std::expected<int, int> result{1}; return *result - 1; }\n")
+    try_compile(
+      engine_expected_probe_result
+      "${CMAKE_BINARY_DIR}/CMakeFiles/expected_probe_build"
+      "${CMAKE_BINARY_DIR}/CMakeFiles/expected_probe.cpp"
+      CXX_STANDARD 23
+      OUTPUT_VARIABLE engine_expected_probe_output)
+    message(STATUS "std::expected probe diagnostic output:\n${engine_expected_probe_output}")
     message(
       FATAL_ERROR
         "The selected C++23 standard library does not provide std::expected; use GCC 12+, Clang with a compatible modern standard library, or Apple Clang 15+"
