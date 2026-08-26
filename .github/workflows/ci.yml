@@ -145,6 +145,13 @@ jobs:
       - name: Configure
         run: cmake --preset fuzz
 
+      - name: Show CMake check logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          cat build/fuzz/CMakeFiles/CMakeError.log 2>/dev/null || true
+          cat build/fuzz/CMakeFiles/CMakeOutput.log 2>/dev/null || true
+
       - name: Build
         run: cmake --build --preset fuzz
 
