@@ -13,6 +13,7 @@ engine_validate_options()
 add_library(
   matching_engine_core STATIC
   src/bbo.cpp
+  src/bbo_protocol.cpp
   src/command.cpp
   src/command_protocol.cpp
   src/gateway.cpp
@@ -141,6 +142,7 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
   add_executable(
     matching_engine_core_tests
     tests/bbo_test.cpp
+    tests/bbo_protocol_test.cpp
     tests/command_engine_test.cpp
     tests/command_protocol_test.cpp
     tests/gateway_test.cpp
