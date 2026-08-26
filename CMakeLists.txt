@@ -18,6 +18,7 @@ add_library(
   src/command.cpp
   src/command_protocol.cpp
   src/gateway.cpp
+  src/market_data_input.cpp
   src/market_data_protocol.cpp
   src/order_book.cpp
   src/runtime_controls.cpp
@@ -156,6 +157,7 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
     tests/price_domain_bitmap_test.cpp
     tests/reference_order_book_test.cpp
     tests/lane_merge_test.cpp
+    tests/market_data_input_test.cpp
     tests/market_data_protocol_test.cpp
     tests/runtime_controls_test.cpp
     tests/spsc_queue_test.cpp)
