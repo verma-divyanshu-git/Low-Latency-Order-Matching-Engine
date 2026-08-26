@@ -82,6 +82,17 @@ function(engine_validate_options)
       ]=]
       ENGINE_HAS_WORKING_LIBFUZZER)
     if(NOT ENGINE_HAS_WORKING_LIBFUZZER)
+      file(WRITE "${CMAKE_BINARY_DIR}/CMakeFiles/fuzz_probe.cpp"
+           "#include <cstddef>\n#include <cstdint>\nextern \"C\" int LLVMFuzzerTestOneInput(const std::uint8_t*, std::size_t) { return 0; }\n")
+      try_compile(
+        engine_fuzz_probe_result
+        "${CMAKE_BINARY_DIR}/CMakeFiles/fuzz_probe_build"
+        "${CMAKE_BINARY_DIR}/CMakeFiles/fuzz_probe.cpp"
+        CXX_STANDARD 23
+        COMPILE_DEFINITIONS "-fsanitize=fuzzer-no-link,address -fno-omit-frame-pointer"
+        LINK_OPTIONS "-fsanitize=address" "-fsanitize=fuzzer"
+        OUTPUT_VARIABLE engine_fuzz_probe_output)
+      message(STATUS "libFuzzer probe diagnostic output:\n${engine_fuzz_probe_output}")
       message(
         FATAL_ERROR
           "The fuzz preset requires Clang with working libFuzzer and AddressSanitizer runtimes; '${CMAKE_CXX_COMPILER}' could not compile and link a fuzz harness"
