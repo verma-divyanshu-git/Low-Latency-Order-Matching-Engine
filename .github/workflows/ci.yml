@@ -143,9 +143,11 @@ jobs:
           sudo apt-get install --yes "libclang-rt-${clang_major}-dev"
 
       - name: Configure
-        # Build against LLVM's own libc++ (installed above) so std::expected
-        # detection does not depend on which GCC libstdc++ Clang auto-selects.
-        run: cmake --preset fuzz -DCMAKE_CXX_FLAGS="-stdlib=libc++"
+        # Clang <=18 reports __cpp_concepts=201907L, so libstdc++ keeps
+        # std::expected behind its `__cpp_concepts >= 202002L` gate. Clang
+        # implements concepts fully, so advertise the finished value; libc++
+        # would expose std::expected but breaks the libstdc++-built libFuzzer.
+        run: cmake --preset fuzz -DCMAKE_CXX_FLAGS="-U__cpp_concepts -D__cpp_concepts=202002L"
 
       - name: Build
         run: cmake --build --preset fuzz
