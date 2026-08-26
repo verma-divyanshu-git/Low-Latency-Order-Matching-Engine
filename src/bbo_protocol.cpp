@@ -59,7 +59,7 @@ BboFrameError encode_bbo_frame(const BboState& state, std::span<std::byte> outpu
     encode_little_endian(state.ask_price->ticks(), output.subspan(kAskPriceOffset));
     encode_little_endian(state.ask_quantity.value(), output.subspan(kAskQuantityOffset));
   }
-  return BboFrameError{};
+  return BboFrameError::none;
 }
 
 std::expected<BboState, BboFrameError>
