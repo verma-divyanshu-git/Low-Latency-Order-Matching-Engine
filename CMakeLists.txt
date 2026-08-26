@@ -143,6 +143,7 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
     tests/order_book_test.cpp
     tests/price_domain_bitmap_test.cpp
     tests/reference_order_book_test.cpp
+    tests/lane_merge_test.cpp
     tests/spsc_queue_test.cpp)
   target_compile_definitions(
     matching_engine_core_tests PRIVATE MATCHING_ENGINE_TEST_SEAMS)
