@@ -136,7 +136,11 @@ jobs:
 
       - name: Install Clang build tools
         shell: bash
-        run: sudo apt-get update && sudo apt-get install --yes clang libc++-dev libc++abi-dev cmake ninja-build
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang libc++-dev libc++abi-dev cmake ninja-build
+          clang_major="$(clang --version | grep -oE 'version [0-9]+' | grep -oE '[0-9]+')"
+          sudo apt-get install --yes "libclang-rt-${clang_major}-dev"
 
       - name: Configure
         run: cmake --preset fuzz
