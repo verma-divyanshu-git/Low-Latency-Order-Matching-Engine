@@ -12,6 +12,7 @@ engine_validate_options()
 
 add_library(
   matching_engine_core STATIC
+  src/bbo.cpp
   src/command.cpp
   src/order_book.cpp
   src/sequenced_engine.cpp)
@@ -136,6 +137,7 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
 
   add_executable(
     matching_engine_core_tests
+    tests/bbo_test.cpp
     tests/command_engine_test.cpp
     tests/invariant_test.cpp
     tests/order_arena_test.cpp
