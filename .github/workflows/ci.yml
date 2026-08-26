@@ -143,10 +143,9 @@ jobs:
           sudo apt-get install --yes "libclang-rt-${clang_major}-dev"
 
       - name: Configure
-        # Clang auto-detects the newest installed GCC (14) instead of the
-        # default g++ (13), and GCC 14's libstdc++ headers do not satisfy
-        # Clang's parser for std::expected here; pin the GCC 13 toolchain.
-        run: cmake --preset fuzz -DCMAKE_CXX_FLAGS="--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/13"
+        # Build against LLVM's own libc++ (installed above) so std::expected
+        # detection does not depend on which GCC libstdc++ Clang auto-selects.
+        run: cmake --preset fuzz -DCMAKE_CXX_FLAGS="-stdlib=libc++"
 
       - name: Build
         run: cmake --build --preset fuzz
