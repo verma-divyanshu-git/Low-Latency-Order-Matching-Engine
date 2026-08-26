@@ -14,6 +14,7 @@ inline constexpr std::uint8_t kBboProtocolVersion = 1U;
 inline constexpr std::size_t kEncodedBboFrameSize = 40U;
 
 enum class BboFrameError : std::uint8_t {
+  none,
   invalid_length,
   unsupported_version,
   noncanonical,
