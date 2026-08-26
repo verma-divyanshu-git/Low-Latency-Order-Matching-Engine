@@ -1,6 +1,7 @@
 #ifndef MATCHING_ENGINE_PIPELINE_HPP
 #define MATCHING_ENGINE_PIPELINE_HPP
 
+#include "matching_engine/bbo.hpp"
 #include "matching_engine/journal.hpp"
 #include "matching_engine/snapshot.hpp"
 #include "matching_engine/spsc_queue.hpp"
@@ -96,6 +97,9 @@ public:
   [[nodiscard]] const SequencedEngine& engine() const noexcept {
     return *engine_;
   }
+  [[nodiscard]] const BboSnapshot& bbo_snapshot() const noexcept {
+    return bbo_snapshot_;
+  }
   [[nodiscard]] bool poisoned() const noexcept {
     return poisoned_;
   }
@@ -106,6 +110,7 @@ private:
   EventQueue::Producer events_;
   std::unique_ptr<EngineEvent[]> scratch_;
   std::size_t scratch_capacity_{};
+  BboSnapshot bbo_snapshot_{};
   bool poisoned_{};
 };
 

@@ -137,6 +137,25 @@ MatchingStatus MatchingStage::process_one() noexcept {
     return poison(MatchingStatus::internal_invariant_failure);
   }
 
+  bbo_snapshot_.publish(BboState{.bid_price = engine_->order_book().best_bid(),
+                                 .bid_quantity = engine_->order_book()
+                                                     .best_bid()
+                                                     .transform([this](Price price) {
+                                                       return engine_->order_book()
+                                                           .level_info(Side::buy, price)
+                                                           ->aggregate_quantity;
+                                                     })
+                                                     .value_or(Quantity{0U}),
+                                 .ask_price = engine_->order_book().best_ask(),
+                                 .ask_quantity = engine_->order_book()
+                                                     .best_ask()
+                                                     .transform([this](Price price) {
+                                                       return engine_->order_book()
+                                                           .level_info(Side::sell, price)
+                                                           ->aggregate_quantity;
+                                                     })
+                                                     .value_or(Quantity{0U})});
+
   SequencedCommand released{};
   if (!commands_.try_pop(released) || released != command) {
     return poison(MatchingStatus::internal_invariant_failure);

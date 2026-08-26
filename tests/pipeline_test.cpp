@@ -87,10 +87,15 @@ TEST(PipelineTest, AppendsBeforePublishingAndPreservesOrderedEvents) {
       IngressStatus::progress);
   EXPECT_EQ(ingress.journal_size(), 1U);
   EXPECT_EQ(matching.process_one(), MatchingStatus::progress);
+  ASSERT_TRUE(matching.bbo_snapshot().read().has_value());
+  EXPECT_EQ(matching.bbo_snapshot().read()->ask_price, std::optional<Price>{Price{102}});
+  EXPECT_EQ(matching.bbo_snapshot().read()->ask_quantity, Quantity{2U});
   EXPECT_EQ(
       ingress.try_ingest(CommandPayload::submit_market(OrderId{2U}, Side::buy, Quantity{2U}), 2U),
       IngressStatus::progress);
   EXPECT_EQ(matching.process_one(), MatchingStatus::progress);
+  ASSERT_TRUE(matching.bbo_snapshot().read().has_value());
+  EXPECT_FALSE(matching.bbo_snapshot().read()->ask_price.has_value());
 
   std::array<EngineEvent, 3U> actual{};
   std::size_t count{};
