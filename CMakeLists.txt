@@ -34,6 +34,7 @@ engine_configure_target(matching_engine_core)
 add_library(
   matching_engine_persistence STATIC
   src/journal.cpp
+  src/mbo_publisher.cpp
   src/pipeline.cpp
   src/replay.cpp
   src/snapshot.cpp)
@@ -179,6 +180,7 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
   add_library(
     matching_engine_persistence_test STATIC
     src/journal.cpp
+    src/mbo_publisher.cpp
     src/pipeline.cpp
     src/replay.cpp
     src/snapshot.cpp)
@@ -193,6 +195,7 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
   add_executable(
     matching_engine_persistence_tests
     tests/journal_test.cpp
+    tests/mbo_publisher_test.cpp
     tests/pipeline_test.cpp
     tests/snapshot_replay_test.cpp)
   target_compile_definitions(
