@@ -229,6 +229,7 @@ public:
     write_u32(bytes, 8U, kSnapshotFormatVersion);
     write_u32(bytes, 12U, static_cast<std::uint32_t>(kSnapshotHeaderSize));
     write_u32(bytes, 16U, static_cast<std::uint32_t>(kSnapshotSlotSize));
+    write_u32(bytes, 20U, static_cast<std::uint32_t>(book.self_trade_policy_));
     write_u64(bytes, 24U, size);
     write_u64(bytes, 32U, static_cast<std::uint64_t>(book.domain_.minimum().ticks()));
     write_u32(bytes, 40U, book.domain_.tick_count());
@@ -255,6 +256,7 @@ public:
         write_u32(bytes, offset + 32U, slot.order.next_index);
         write_u32(bytes, offset + 36U, slot.order.encoded_level_side);
         write_u32(bytes, offset + 40U, slot.order.reserved_flags);
+        write_u64(bytes, offset + 48U, book.trader_ids_[index].value());
       }
     }
     write_u32(bytes, kChecksumOffset, snapshot_crc(bytes));
@@ -270,22 +272,26 @@ public:
         return std::unexpected{SnapshotError::invalid_header};
       }
     }
-    if (read_u32(bytes, 8U) != kSnapshotFormatVersion) {
+    const std::uint32_t version = read_u32(bytes, 8U);
+    if (version != 1U && version != kSnapshotFormatVersion) {
       return std::unexpected{SnapshotError::unsupported_version};
     }
-    if (read_u32(bytes, 12U) != kSnapshotHeaderSize || read_u32(bytes, 16U) != kSnapshotSlotSize ||
-        read_u32(bytes, 20U) != 0U ||
+    const std::size_t slot_size = version == 1U ? 48U : kSnapshotSlotSize;
+    const std::uint32_t self_trade_policy = read_u32(bytes, 20U);
+    if (read_u32(bytes, 12U) != kSnapshotHeaderSize || read_u32(bytes, 16U) != slot_size ||
+        (version == 1U && self_trade_policy != 0U) ||
+        (version == kSnapshotFormatVersion && self_trade_policy > static_cast<std::uint32_t>(SelfTradePolicy::cancel_taker)) ||
         !zero(bytes.subspan(kHeaderReservedOffset, kSnapshotHeaderSize - kHeaderReservedOffset))) {
       return std::unexpected{SnapshotError::invalid_header};
     }
     const std::uint32_t capacity = read_u32(bytes, 48U);
     if (capacity > kMaximumSnapshotSlots ||
         static_cast<std::size_t>(capacity) >
-            (std::numeric_limits<std::size_t>::max() - kSnapshotHeaderSize) / kSnapshotSlotSize) {
+            (std::numeric_limits<std::size_t>::max() - kSnapshotHeaderSize) / slot_size) {
       return std::unexpected{SnapshotError::file_too_large};
     }
     const std::size_t expected =
-        kSnapshotHeaderSize + static_cast<std::size_t>(capacity) * kSnapshotSlotSize;
+        kSnapshotHeaderSize + static_cast<std::size_t>(capacity) * slot_size;
     if (bytes.size() != expected || read_u64(bytes, 24U) != expected) {
       return std::unexpected{SnapshotError::invalid_length};
     }
@@ -318,7 +324,8 @@ public:
     try {
       auto engine = std::make_unique<SequencedEngine>(
           PriceDomain{Price{static_cast<std::int64_t>(read_u64(bytes, 32U))}, tick_count}, capacity,
-          Quantity{max_quantity}, Sequence{next_sequence}, last_time);
+          Quantity{max_quantity}, Sequence{next_sequence}, last_time,
+          static_cast<SelfTradePolicy>(self_trade_policy));
       engine->sequence_exhausted_ = exhausted == 1U;
       OrderBook& book = engine->order_book_;
       book.arena_.size_ = live_count;
@@ -326,13 +333,12 @@ public:
       std::uint32_t observed_live{};
       for (std::uint32_t index = 0; index < capacity; ++index) {
         const std::size_t offset =
-            kSnapshotHeaderSize + static_cast<std::size_t>(index) * kSnapshotSlotSize;
+            kSnapshotHeaderSize + static_cast<std::size_t>(index) * slot_size;
         auto& slot = book.arena_.slots_[index];
         slot.generation = read_u32(bytes, offset);
         slot.free_next = read_u32(bytes, offset + 4U);
         const std::uint8_t live = std::to_integer<std::uint8_t>(bytes[offset + 8U]);
-        if (live > 1U || !zero(bytes.subspan(offset + 9U, 3U)) ||
-            read_u32(bytes, offset + 44U) != 0U) {
+        if (live > 1U || !zero(bytes.subspan(offset + 9U, 3U))) {
           return std::unexpected{SnapshotError::noncanonical_slot};
         }
         if (slot.generation == 0U) {
@@ -340,7 +346,7 @@ public:
         }
         slot.live = live == 1U;
         if (!slot.live) {
-          if (!zero(bytes.subspan(offset + 12U, 32U))) {
+          if (!zero(bytes.subspan(offset + 12U, slot_size - 12U))) {
             return std::unexpected{SnapshotError::noncanonical_slot};
           }
           slot.order = {.id = OrderId{0U},
@@ -358,6 +364,7 @@ public:
                       .next_index = read_u32(bytes, offset + 32U),
                       .encoded_level_side = read_u32(bytes, offset + 36U),
                       .reserved_flags = read_u32(bytes, offset + 40U)};
+        book.trader_ids_[index] = TraderId{version == 1U ? 0U : read_u64(bytes, offset + 48U)};
         const std::uint32_t level = detail::decode_level(slot.order.encoded_level_side);
         if (slot.order.remaining.value() == 0U || slot.order.remaining.value() > max_quantity ||
             level >= tick_count || slot.order.reserved_flags != 0U ||
