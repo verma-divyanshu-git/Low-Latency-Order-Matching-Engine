@@ -177,7 +177,7 @@ void compare_state(OrderBook& engine, const ReferenceOrderBook& model,
 
 void execute(ByteReader& reader, OrderId id, OrderBook& engine, ReferenceOrderBook& model,
              std::array<Trade, kCapacity>& trade_storage, std::vector<TrackedOrder>& tracked) {
-  const std::uint8_t operation = reader.read() % 5U;
+  const std::uint8_t operation = reader.read() % 6U;
   const Side side = decode_side(reader.read());
   const Price price = decode_price(reader.read());
   const Quantity quantity = decode_quantity(reader.read());
@@ -232,6 +232,17 @@ void execute(ByteReader& reader, OrderId id, OrderBook& engine, ReferenceOrderBo
     const SubmitResult engine_result = engine.replace(engine_handle, price, quantity, trades);
     const ModelSubmitResult model_result =
         model.replace(model_token, price, quantity, trade_capacity);
+    compare_submit(engine_result, model_result, trade_storage);
+    track_resting(engine_result, model_result, tracked);
+    break;
+  }
+  case 5U: {
+    const Quantity display_quantity = decode_quantity(target_byte);
+    const SubmitResult engine_result =
+        engine.submit_iceberg(id, side, price, quantity, display_quantity, trades);
+    const ModelSubmitResult model_result =
+        model.submit_iceberg(id, TraderId{0U}, side, price, quantity, display_quantity,
+                             trade_capacity);
     compare_submit(engine_result, model_result, trade_storage);
     track_resting(engine_result, model_result, tracked);
     break;

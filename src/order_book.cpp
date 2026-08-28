@@ -68,7 +68,19 @@ OrderBook::OrderBook(PriceDomain domain, std::size_t max_orders, Quantity max_or
       bid_occupancy_{domain_.tick_count()}, ask_occupancy_{domain_.tick_count()},
       arena_{max_orders},
       trader_ids_{arena_.capacity() == 0U ? nullptr : std::make_unique<TraderId[]>(arena_.capacity())},
+      display_quantities_{arena_.capacity() == 0U
+              ? nullptr
+                              : std::make_unique<std::uint64_t[]>(arena_.capacity())},
+      displayed_remaining_{arena_.capacity() == 0U
+               ? nullptr
+                               : std::make_unique<std::uint64_t[]>(arena_.capacity())},
       self_trade_policy_{self_trade_policy},
+      trade_report_indices_{arena_.capacity() == 0U
+                ? nullptr
+                : std::make_unique<std::uint32_t[]>(arena_.capacity())},
+      trade_report_epochs_{arena_.capacity() == 0U
+               ? nullptr
+               : std::make_unique<std::uint32_t[]>(arena_.capacity())},
       visit_marks_{arena_.capacity() == 0U ? nullptr
                                            : std::make_unique<std::uint32_t[]>(arena_.capacity())} {
 }
@@ -202,7 +214,8 @@ SubmitResult OrderBook::submit_limit(OrderId id, TraderId trader_id, Side side, 
   std::uint32_t trade_count = 0U;
   match(id, trader_id, side, level_index, remaining, trades, trade_count);
   const bool should_rest = time_in_force == TimeInForce::gtc && remaining != 0U;
-  const Handle handle = should_rest ? rest(id, trader_id, side, level_index, remaining) : kInvalidHandle;
+  const Handle handle =
+      should_rest ? rest(id, trader_id, side, level_index, remaining, remaining) : kInvalidHandle;
   return {.reject_reason = RejectReason::none,
           .executed_quantity = Quantity{quantity.value() - remaining},
           .unfilled_quantity = Quantity{remaining},
@@ -220,6 +233,49 @@ SubmitResult OrderBook::submit_post_only(OrderId id, Side side, Price price, Qua
     return rejected(preflight_result, quantity);
   }
   return submit_limit(id, TraderId{0U}, side, price, quantity, TimeInForce::gtc, trades);
+}
+
+SubmitResult OrderBook::submit_iceberg(OrderId id, Side side, Price price, Quantity quantity,
+                                       Quantity display_quantity,
+                                       std::span<Trade> trades) noexcept {
+  return submit_iceberg(id, TraderId{0U}, side, price, quantity, display_quantity, trades);
+}
+
+SubmitResult OrderBook::submit_iceberg(OrderId id, TraderId trader_id, Side side, Price price,
+                                       Quantity quantity, Quantity display_quantity,
+                                       std::span<Trade> trades) noexcept {
+  if (display_quantity.value() == 0U || display_quantity > quantity) {
+    return rejected(RejectReason::invalid_display_quantity, quantity);
+  }
+  const RejectReason basic = preflight(side, quantity);
+  if (basic != RejectReason::none) {
+    return rejected(basic, quantity);
+  }
+  if (trades.size() < required_trade_capacity()) {
+    return rejected(RejectReason::insufficient_trade_capacity, quantity);
+  }
+  const RejectReason preflight_result = preflight_limit(side, price, quantity, TimeInForce::gtc);
+  if (preflight_result != RejectReason::none) {
+    return rejected(preflight_result, quantity);
+  }
+  const std::uint32_t level_index = *domain_.index_of(price);
+  if (self_trade_policy_ == SelfTradePolicy::cancel_taker &&
+      would_self_trade(trader_id, side, level_index)) {
+    return rejected(RejectReason::self_trade_prevented, quantity);
+  }
+
+  std::uint64_t remaining = quantity.value();
+  std::uint32_t trade_count = 0U;
+  match(id, trader_id, side, level_index, remaining, trades, trade_count);
+  const Handle handle = remaining == 0U
+                            ? kInvalidHandle
+                            : rest(id, trader_id, side, level_index, remaining,
+                                   std::min(display_quantity.value(), remaining));
+  return {.reject_reason = RejectReason::none,
+          .executed_quantity = Quantity{quantity.value() - remaining},
+          .unfilled_quantity = Quantity{remaining},
+          .trade_count = trade_count,
+          .resting_handle = handle};
 }
 
 bool OrderBook::can_fully_fill(Side side, std::uint32_t limit_index,
@@ -297,6 +353,14 @@ void OrderBook::match(OrderId taker_id, TraderId taker_trader_id, Side taker_sid
                       std::optional<std::uint32_t> limit_index,
                       std::uint64_t& remaining, std::span<Trade> trades,
                       std::uint32_t& trade_count) noexcept {
+  if (trade_report_epoch_ == std::numeric_limits<std::uint32_t>::max()) {
+    for (std::uint32_t index = 0U; index < arena_.capacity(); ++index) {
+      trade_report_epochs_[index] = 0U;
+    }
+    trade_report_epoch_ = 1U;
+  } else {
+    ++trade_report_epoch_;
+  }
   const Side maker_side = opposite_side(taker_side);
   while (remaining != 0U) {
     const auto maker_level = best_index(maker_side);
@@ -322,22 +386,58 @@ void OrderBook::match_level(OrderId taker_id, TraderId taker_trader_id, Side tak
     return;
   }
   while (remaining != 0U && price_level.head_index != kInvalidIndex) {
-    Order& maker = arena_.order_at(price_level.head_index);
+    const std::uint32_t maker_index = price_level.head_index;
+    Order& maker = arena_.order_at(maker_index);
     if (self_trade_policy_ == SelfTradePolicy::cancel_taker &&
-        trader_ids_[price_level.head_index] == taker_trader_id) {
+        trader_ids_[maker_index] == taker_trader_id) {
       return;
     }
-    const std::uint64_t execution = std::min(remaining, maker.remaining.value());
-    trades[trade_count++] =
-        make_trade(taker_side, taker_id, maker.id, *execution_price, Quantity{execution});
+    const std::uint64_t execution =
+        std::min(remaining, displayed_remaining_[maker_index]);
+    if (trade_report_epochs_[maker_index] == trade_report_epoch_) {
+      Trade& report = trades[trade_report_indices_[maker_index]];
+      report.quantity = Quantity{report.quantity.value() + execution};
+    } else {
+      trade_report_epochs_[maker_index] = trade_report_epoch_;
+      trade_report_indices_[maker_index] = trade_count;
+      trades[trade_count++] =
+          make_trade(taker_side, taker_id, maker.id, *execution_price, Quantity{execution});
+    }
     remaining -= execution;
     price_level.aggregate_quantity -= execution;
+    displayed_remaining_[maker_index] -= execution;
     if (execution == maker.remaining.value()) {
-      unlink(arena_.handle_at(price_level.head_index), 0U);
+      unlink(arena_.handle_at(maker_index), 0U);
     } else {
       maker.remaining = Quantity{maker.remaining.value() - execution};
+      if (displayed_remaining_[maker_index] == 0U) {
+        displayed_remaining_[maker_index] =
+            std::min(display_quantities_[maker_index], maker.remaining.value());
+        move_to_tail(maker_index);
+      }
     }
   }
+}
+
+void OrderBook::move_to_tail(std::uint32_t order_index) noexcept {
+  Order& order = arena_.order_at(order_index);
+  const Side side = detail::decode_side(order.encoded_level_side);
+  PriceLevel& price_level = level(side, detail::decode_level(order.encoded_level_side));
+  if (price_level.tail_index == order_index) {
+    return;
+  }
+  const std::uint32_t previous_index = order.prev_index;
+  const std::uint32_t next_index = order.next_index;
+  if (previous_index == kInvalidIndex) {
+    price_level.head_index = next_index;
+  } else {
+    arena_.order_at(previous_index).next_index = next_index;
+  }
+  arena_.order_at(next_index).prev_index = previous_index;
+  arena_.order_at(price_level.tail_index).next_index = order_index;
+  order.prev_index = price_level.tail_index;
+  order.next_index = kInvalidIndex;
+  price_level.tail_index = order_index;
 }
 
 void OrderBook::unlink(Handle handle, std::uint64_t aggregate_reduction) noexcept {
@@ -398,6 +498,8 @@ AmendResult OrderBook::amend_quantity(Handle handle, Quantity new_remaining) noe
   const std::uint32_t level_index = detail::decode_level(order->encoded_level_side);
   level(side, level_index).aggregate_quantity -= previous.value() - new_remaining.value();
   order->remaining = new_remaining;
+    displayed_remaining_[handle.index] =
+      std::min(displayed_remaining_[handle.index], new_remaining.value());
   return {AmendReason::none, order->id, previous, new_remaining, handle};
 }
 
@@ -424,7 +526,7 @@ SubmitResult OrderBook::replace(Handle handle, Price new_price, Quantity new_qua
 }
 
 Handle OrderBook::rest(OrderId id, TraderId trader_id, Side side, std::uint32_t level_index,
-                       std::uint64_t remaining) noexcept {
+                       std::uint64_t remaining, std::uint64_t display_quantity) noexcept {
   PriceLevel& price_level = level(side, level_index);
   const Order order{.id = id,
                     .remaining = Quantity{remaining},
@@ -434,6 +536,8 @@ Handle OrderBook::rest(OrderId id, TraderId trader_id, Side side, std::uint32_t 
                     .reserved_flags = 0U};
   const AcquireResult acquired = arena_.acquire(order);
   trader_ids_[acquired.handle.index] = trader_id;
+  display_quantities_[acquired.handle.index] = display_quantity;
+  displayed_remaining_[acquired.handle.index] = display_quantity;
   if (price_level.tail_index == kInvalidIndex) {
     price_level.head_index = acquired.handle.index;
     static_cast<void>(occupancy(side).set(level_index));
@@ -593,6 +697,13 @@ InvariantResult OrderBook::check_side_invariants(Side side, std::uint32_t epoch,
       }
       if (order.remaining.value() == 0U) {
         return invariant_failure(InvariantViolation::nonpositive_remaining, side, level_index,
+                                 current, reachable_count);
+      }
+      if (display_quantities_[current] == 0U ||
+          displayed_remaining_[current] == 0U ||
+          displayed_remaining_[current] > display_quantities_[current] ||
+          displayed_remaining_[current] > order.remaining.value()) {
+        return invariant_failure(InvariantViolation::invalid_display_state, side, level_index,
                                  current, reachable_count);
       }
       if (walked_quantity > std::numeric_limits<std::uint64_t>::max() - order.remaining.value()) {

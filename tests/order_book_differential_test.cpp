@@ -1,6 +1,7 @@
 #include "support/differential_simulator.hpp"
 #include "support/reference_order_book.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <gtest/gtest.h>
@@ -92,6 +93,62 @@ TEST(OrderBookDifferentialTest, PostOnlyMatchesReferenceForCrossingAndRestingOrd
   EXPECT_EQ(production.level_info(Side::sell, Price{102}), reference.level_info(Side::sell, Price{102}));
   EXPECT_EQ(production.check_invariants().violation, InvariantViolation::none);
 }
+
+  TEST(OrderBookDifferentialTest, IcebergReplenishmentLosesPriorityAtItsPriceLevel) {
+    OrderBook production{PriceDomain{Price{100}, 5U}, 8U, Quantity{20U}};
+    ReferenceOrderBook reference{Price{100}, 5U, 8U, Quantity{20U}};
+    std::array<Trade, 8U> production_trades{};
+
+    const SubmitResult production_iceberg = production.submit_iceberg(
+      OrderId{1U}, TraderId{7U}, Side::sell, Price{102}, Quantity{9U}, Quantity{3U},
+      production_trades);
+    const ModelSubmitResult reference_iceberg = reference.submit_iceberg(
+      OrderId{1U}, TraderId{7U}, Side::sell, Price{102}, Quantity{9U}, Quantity{3U}, 8U);
+    ASSERT_EQ(production_iceberg.reject_reason, reference_iceberg.reject_reason);
+    ASSERT_EQ(production.submit_limit(OrderId{2U}, Side::sell, Price{102}, Quantity{2U},
+                    production_trades)
+          .reject_reason,
+        RejectReason::none);
+    ASSERT_EQ(reference.submit_limit(OrderId{2U}, Side::sell, Price{102}, Quantity{2U},
+                     TimeInForce::gtc, 8U)
+          .reject_reason,
+        RejectReason::none);
+
+    const SubmitResult production_fill = production.submit_market(
+      OrderId{3U}, Side::buy, Quantity{8U}, production_trades);
+    const ModelSubmitResult reference_fill =
+      reference.submit_market(OrderId{3U}, Side::buy, Quantity{8U}, 8U);
+
+    ASSERT_EQ(production_fill.trade_count, 2U);
+    EXPECT_EQ(production_fill.executed_quantity, reference_fill.executed_quantity);
+    EXPECT_EQ(production_fill.unfilled_quantity, reference_fill.unfilled_quantity);
+    EXPECT_TRUE(std::equal(production_trades.begin(),
+                           production_trades.begin() + production_fill.trade_count,
+                           reference_fill.trades.begin(), reference_fill.trades.end()));
+    EXPECT_EQ(production_trades[0].sell_id, OrderId{1U});
+    EXPECT_EQ(production_trades[1].sell_id, OrderId{2U});
+    EXPECT_EQ(production_trades[0].quantity, Quantity{6U});
+    EXPECT_EQ(production_trades[1].quantity, Quantity{2U});
+    EXPECT_EQ(production.level_info(Side::sell, Price{102}),
+        reference.level_info(Side::sell, Price{102}));
+    EXPECT_EQ(production.check_invariants().violation, InvariantViolation::none);
+  }
+
+  TEST(OrderBookDifferentialTest, IcebergValidatesQuantityBeforeTradeCapacity) {
+    OrderBook production{PriceDomain{Price{100}, 5U}, 8U, Quantity{16U}};
+    ReferenceOrderBook reference{Price{100}, 5U, 8U, Quantity{16U}};
+    std::array<Trade, 1U> production_trades{};
+
+    const SubmitResult production_result = production.submit_iceberg(
+        OrderId{1U}, Side::sell, Price{102}, Quantity{17U}, Quantity{10U}, production_trades);
+    const ModelSubmitResult reference_result = reference.submit_iceberg(
+        OrderId{1U}, TraderId{0U}, Side::sell, Price{102}, Quantity{17U}, Quantity{10U},
+        production_trades.size());
+
+    EXPECT_EQ(production_result.reject_reason, RejectReason::quantity_too_large);
+    EXPECT_EQ(production_result.reject_reason, reference_result.reject_reason);
+    EXPECT_EQ(production.check_invariants().violation, InvariantViolation::none);
+  }
 
 } // namespace
 } // namespace matching_engine::test

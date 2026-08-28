@@ -47,6 +47,12 @@ std::size_t SequencedEngine::required_event_capacity(const CommandPayload& paylo
                    RejectReason::none
                ? trade_capacity_ + 1U
                : 1U;
+  case CommandType::submit_iceberg:
+    return order_book_.preflight_limit(payload.side, Price{payload.price_ticks},
+                                       Quantity{payload.quantity}, TimeInForce::gtc) ==
+                   RejectReason::none
+               ? trade_capacity_ + 1U
+               : 1U;
   case CommandType::replace:
     if (order_book_.preflight_replace(Handle{payload.handle_index, payload.handle_generation},
                                       Price{payload.price_ticks},
@@ -105,6 +111,14 @@ ApplyResult SequencedEngine::apply(const SequencedCommand& command,
   case CommandType::submit_market: {
     const SubmitResult result = order_book_.submit_market(OrderId{payload.order_id}, payload.side,
                                                           Quantity{payload.quantity}, trades);
+    write_submit_events(command, result, events);
+    event_count += result.trade_count;
+    break;
+  }
+  case CommandType::submit_iceberg: {
+    const SubmitResult result = order_book_.submit_iceberg(
+        OrderId{payload.order_id}, payload.side, Price{payload.price_ticks},
+        Quantity{payload.quantity}, payload.iceberg_display_quantity(), trades);
     write_submit_events(command, result, events);
     event_count += result.trade_count;
     break;
