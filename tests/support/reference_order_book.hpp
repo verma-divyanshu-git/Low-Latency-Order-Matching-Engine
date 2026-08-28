@@ -122,6 +122,39 @@ public:
     return submit_limit(id, side, price, quantity, TimeInForce::gtc, trade_capacity);
   }
 
+  [[nodiscard]] ModelSubmitResult submit_iceberg(OrderId id, TraderId trader_id, Side side,
+                                                  Price price, Quantity quantity,
+                                                  Quantity display_quantity,
+                                                  std::size_t trade_capacity) {
+    if (display_quantity.value() == 0U || display_quantity > quantity) {
+      return rejected(RejectReason::invalid_display_quantity, quantity);
+    }
+    const RejectReason invalid = validate(side, quantity, trade_capacity);
+    if (invalid != RejectReason::none) {
+      return rejected(invalid, quantity);
+    }
+    if (!contains(price)) {
+      return rejected(RejectReason::price_out_of_domain, quantity);
+    }
+    if (live_order_count_ == max_orders_ && !has_crossing_order(side, price)) {
+      return rejected(RejectReason::order_capacity_exhausted, quantity);
+    }
+    if (self_trade_policy_ == SelfTradePolicy::cancel_taker &&
+        would_self_trade(trader_id, side, price)) {
+      return rejected(RejectReason::self_trade_prevented, quantity);
+    }
+    ModelSubmitResult result;
+    std::uint64_t remaining = quantity.value();
+    match(id, side, price, remaining, result);
+    result.executed_quantity = Quantity{quantity.value() - remaining};
+    result.unfilled_quantity = Quantity{remaining};
+    if (remaining != 0U) {
+      result.resting_token = rest(id, trader_id, side, price, Quantity{remaining},
+                                  Quantity{std::min(display_quantity.value(), remaining)});
+    }
+    return result;
+  }
+
   [[nodiscard]] ModelCancelResult cancel(ModelToken token) {
     const auto location = locate(token);
     if (!location.has_value()) {
@@ -243,6 +276,8 @@ private:
     TraderId trader_id;
     Side side;
     Quantity remaining;
+    Quantity display_quantity;
+    Quantity displayed_remaining;
   };
 
   using Queue = std::deque<ModelOrder>;
@@ -377,33 +412,57 @@ private:
     while (remaining != 0U && !makers.empty()) {
       ModelOrder& maker = makers.front();
       const std::uint64_t maker_before = maker.remaining.value();
-      const std::uint64_t execution = std::min(remaining, maker_before);
+      const std::uint64_t execution = std::min(remaining, maker.displayed_remaining.value());
       const bool valid_maker =
           maker.token != 0U && maker.side != taker_side && maker_before >= execution;
       result.phantom_fills_valid = result.phantom_fills_valid && valid_maker;
       const Trade trade = taker_side == Side::buy
-                              ? Trade{taker_id, maker.id, Price{maker_price}, Quantity{execution}}
-                              : Trade{maker.id, taker_id, Price{maker_price}, Quantity{execution}};
+              ? Trade{taker_id, maker.id, Price{maker_price}, Quantity{execution}}
+              : Trade{maker.id, taker_id, Price{maker_price}, Quantity{execution}};
       const bool valid_ids = taker_side == Side::buy
                                  ? trade.buy_id == taker_id && trade.sell_id == maker.id
                                  : trade.sell_id == taker_id && trade.buy_id == maker.id;
       result.phantom_fills_valid = result.phantom_fills_valid && valid_ids;
-      result.trades.push_back(trade);
+      const auto existing = std::find_if(result.trades.begin(), result.trades.end(),
+                                         [&](const Trade& candidate) {
+                                           return candidate.buy_id == trade.buy_id &&
+                                                  candidate.sell_id == trade.sell_id &&
+                                                  candidate.price == trade.price;
+                                         });
+      if (existing == result.trades.end()) {
+        result.trades.push_back(trade);
+      } else {
+        existing->quantity = Quantity{existing->quantity.value() + execution};
+      }
       remaining -= execution;
       if (execution == maker_before) {
         makers.pop_front();
         --live_order_count_;
       } else {
         maker.remaining = Quantity{maker_before - execution};
+        maker.displayed_remaining = Quantity{maker.displayed_remaining.value() - execution};
+        if (maker.displayed_remaining.value() == 0U) {
+            ModelOrder replenished = maker;
+            replenished.displayed_remaining = Quantity{
+              std::min(replenished.display_quantity.value(), replenished.remaining.value())};
+          makers.pop_front();
+            makers.push_back(replenished);
+        }
       }
     }
   }
 
   [[nodiscard]] ModelToken rest(OrderId id, TraderId trader_id, Side side, Price price,
                                  Quantity remaining) {
+    return rest(id, trader_id, side, price, remaining, remaining);
+  }
+
+  [[nodiscard]] ModelToken rest(OrderId id, TraderId trader_id, Side side, Price price,
+                                 Quantity remaining, Quantity display_quantity) {
     const ModelToken token = next_token_++;
     Levels& levels = side == Side::buy ? bids_ : asks_;
-    levels[price.ticks()].push_back(ModelOrder{token, id, trader_id, side, remaining});
+    levels[price.ticks()].push_back(
+      ModelOrder{token, id, trader_id, side, remaining, display_quantity, display_quantity});
     ++live_order_count_;
     return token;
   }

@@ -231,11 +231,34 @@ TEST(SnapshotCodecTest, PreservesSelfTradePolicyAndTraderIdentity) {
             (LevelInfo{Quantity{4U}, 1U}));
 }
 
+TEST(SnapshotCodecTest, PreservesPartiallyConsumedIcebergDisplayState) {
+  SequencedEngine engine{PriceDomain{Price{100}, 3U}, 3U, Quantity{10U}};
+  std::array<Trade, 3U> trades{};
+  const SubmitResult iceberg = engine.order_book().submit_iceberg(
+      OrderId{1U}, Side::sell, Price{101}, Quantity{7U}, Quantity{3U}, trades);
+  ASSERT_EQ(iceberg.reject_reason, RejectReason::none);
+  ASSERT_EQ(engine.order_book().submit_market(OrderId{2U}, Side::buy, Quantity{2U}, trades)
+                .reject_reason,
+            RejectReason::none);
+
+  const auto encoded = encode_snapshot(engine, SnapshotPoint{Sequence{0U}, 0U});
+  ASSERT_TRUE(encoded.has_value());
+  const auto restored = decode_snapshot(*encoded);
+  ASSERT_TRUE(restored.has_value());
+  const SubmitResult fill = restored->engine->order_book().submit_market(
+    OrderId{3U}, Side::buy, Quantity{2U}, trades);
+  ASSERT_EQ(fill.trade_count, 1U);
+  EXPECT_EQ(trades[0], (Trade{OrderId{3U}, OrderId{1U}, Price{101}, Quantity{2U}}));
+  EXPECT_EQ(restored->engine->order_book().order_info(iceberg.resting_handle)->remaining,
+        Quantity{3U});
+  EXPECT_EQ(restored->engine->order_book().check_invariants().violation, InvariantViolation::none);
+}
+
 TEST(SnapshotCodecTest, RejectsCorruptionAndNoncanonicalDeadPayload) {
   SequencedEngine engine{PriceDomain{Price{0}, 1U}, 1U, Quantity{1U}};
   auto bytes = encode_snapshot(engine, SnapshotPoint{Sequence{0U}, 0U});
   ASSERT_TRUE(bytes.has_value());
-  (*bytes)[8] = std::byte{3U};
+  (*bytes)[8] = std::byte{4U};
   EXPECT_EQ(decode_snapshot(*bytes).error(), SnapshotError::unsupported_version);
 
   bytes = encode_snapshot(engine, SnapshotPoint{Sequence{0U}, 0U});
@@ -253,7 +276,7 @@ TEST(SnapshotCodecTest, ReachesEveryHeaderAndArenaValidatorWithValidCrc) {
   const std::size_t second = first + kSnapshotSlotSize;
 
   expect_snapshot_mutation(
-      *encoded, [](auto& bytes) { write_snapshot_u32(bytes, 8U, 3U); },
+      *encoded, [](auto& bytes) { write_snapshot_u32(bytes, 8U, 4U); },
       SnapshotError::unsupported_version);
   expect_snapshot_mutation(
       *encoded, [](auto& bytes) { bytes[0U] = std::byte{'X'}; }, SnapshotError::invalid_header);
@@ -261,7 +284,7 @@ TEST(SnapshotCodecTest, ReachesEveryHeaderAndArenaValidatorWithValidCrc) {
       *encoded, [](auto& bytes) { write_snapshot_u32(bytes, 12U, 111U); },
       SnapshotError::invalid_header);
   expect_snapshot_mutation(
-      *encoded, [](auto& bytes) { write_snapshot_u32(bytes, 16U, 47U); },
+      *encoded, [](auto& bytes) { write_snapshot_u32(bytes, 16U, 71U); },
       SnapshotError::invalid_header);
   expect_snapshot_mutation(
       *encoded, [](auto& bytes) { write_snapshot_u32(bytes, 20U, 2U); },

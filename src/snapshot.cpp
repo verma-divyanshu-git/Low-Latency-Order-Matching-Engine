@@ -257,6 +257,8 @@ public:
         write_u32(bytes, offset + 36U, slot.order.encoded_level_side);
         write_u32(bytes, offset + 40U, slot.order.reserved_flags);
         write_u64(bytes, offset + 48U, book.trader_ids_[index].value());
+        write_u64(bytes, offset + 56U, book.display_quantities_[index]);
+        write_u64(bytes, offset + 64U, book.displayed_remaining_[index]);
       }
     }
     write_u32(bytes, kChecksumOffset, snapshot_crc(bytes));
@@ -273,14 +275,14 @@ public:
       }
     }
     const std::uint32_t version = read_u32(bytes, 8U);
-    if (version != 1U && version != kSnapshotFormatVersion) {
+    if (version != 1U && version != 2U && version != kSnapshotFormatVersion) {
       return std::unexpected{SnapshotError::unsupported_version};
     }
-    const std::size_t slot_size = version == 1U ? 48U : kSnapshotSlotSize;
+    const std::size_t slot_size = version == 1U ? 48U : (version == 2U ? 56U : kSnapshotSlotSize);
     const std::uint32_t self_trade_policy = read_u32(bytes, 20U);
     if (read_u32(bytes, 12U) != kSnapshotHeaderSize || read_u32(bytes, 16U) != slot_size ||
         (version == 1U && self_trade_policy != 0U) ||
-        (version == kSnapshotFormatVersion && self_trade_policy > static_cast<std::uint32_t>(SelfTradePolicy::cancel_taker)) ||
+        (version >= 2U && self_trade_policy > static_cast<std::uint32_t>(SelfTradePolicy::cancel_taker)) ||
         !zero(bytes.subspan(kHeaderReservedOffset, kSnapshotHeaderSize - kHeaderReservedOffset))) {
       return std::unexpected{SnapshotError::invalid_header};
     }
@@ -365,8 +367,16 @@ public:
                       .encoded_level_side = read_u32(bytes, offset + 36U),
                       .reserved_flags = read_u32(bytes, offset + 40U)};
         book.trader_ids_[index] = TraderId{version == 1U ? 0U : read_u64(bytes, offset + 48U)};
+        book.display_quantities_[index] =
+          version < 3U ? slot.order.remaining.value() : read_u64(bytes, offset + 56U);
+        book.displayed_remaining_[index] =
+          version < 3U ? slot.order.remaining.value() : read_u64(bytes, offset + 64U);
         const std::uint32_t level = detail::decode_level(slot.order.encoded_level_side);
         if (slot.order.remaining.value() == 0U || slot.order.remaining.value() > max_quantity ||
+          book.display_quantities_[index] == 0U ||
+          book.displayed_remaining_[index] == 0U ||
+          book.displayed_remaining_[index] > book.display_quantities_[index] ||
+          book.displayed_remaining_[index] > slot.order.remaining.value() ||
             level >= tick_count || slot.order.reserved_flags != 0U ||
             (slot.order.prev_index != kInvalidIndex && slot.order.prev_index >= capacity) ||
             (slot.order.next_index != kInvalidIndex && slot.order.next_index >= capacity)) {

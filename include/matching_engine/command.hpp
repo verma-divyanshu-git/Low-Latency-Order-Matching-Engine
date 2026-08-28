@@ -17,6 +17,7 @@ enum class CommandType : std::uint8_t {
   cancel = 3U,
   amend_quantity = 4U,
   replace = 5U,
+  submit_iceberg = 6U,
 };
 
 enum class CommandValidationError : std::uint8_t {
@@ -87,6 +88,23 @@ struct CommandPayload {
             .quantity = new_quantity.value(),
             .handle_index = handle.index,
             .handle_generation = handle.generation};
+  }
+
+  [[nodiscard]] static constexpr CommandPayload submit_iceberg(
+      OrderId id, Side order_side, Price price, Quantity order_quantity,
+      Quantity display_quantity) noexcept {
+    return {.tag = CommandType::submit_iceberg,
+            .side = order_side,
+            .order_id = id.value(),
+            .price_ticks = price.ticks(),
+            .quantity = order_quantity.value(),
+            .handle_index = static_cast<std::uint32_t>(display_quantity.value()),
+            .handle_generation = static_cast<std::uint32_t>(display_quantity.value() >> 32U)};
+  }
+
+  [[nodiscard]] constexpr Quantity iceberg_display_quantity() const noexcept {
+    return Quantity{static_cast<std::uint64_t>(handle_index) |
+                    (static_cast<std::uint64_t>(handle_generation) << 32U)};
   }
 
   constexpr bool operator==(const CommandPayload&) const noexcept = default;

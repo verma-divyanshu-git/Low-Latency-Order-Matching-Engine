@@ -68,7 +68,7 @@ void write_u64(std::span<std::byte> output, std::size_t offset, std::uint64_t va
 CommandValidationError validate_command_payload(const CommandPayload& payload) noexcept {
   if (payload.tag != CommandType::submit_limit && payload.tag != CommandType::submit_market &&
       payload.tag != CommandType::cancel && payload.tag != CommandType::amend_quantity &&
-      payload.tag != CommandType::replace) {
+      payload.tag != CommandType::replace && payload.tag != CommandType::submit_iceberg) {
     return CommandValidationError::invalid_tag;
   }
   if (payload.reserved != 0U) {
@@ -84,6 +84,9 @@ CommandValidationError validate_command_payload(const CommandPayload& payload) n
   case CommandType::submit_limit:
     return is_zero_handle(payload) ? CommandValidationError::none
                                    : CommandValidationError::noncanonical;
+  case CommandType::submit_iceberg:
+    return payload.time_in_force == TimeInForce::gtc ? CommandValidationError::none
+                                                      : CommandValidationError::noncanonical;
   case CommandType::submit_market:
     if (payload.time_in_force != TimeInForce::gtc || payload.price_ticks != 0 ||
         !is_zero_handle(payload)) {

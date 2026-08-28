@@ -67,6 +67,7 @@ enum class RejectReason : std::uint8_t {
   fok_not_fillable,
   post_only_would_cross,
   self_trade_prevented,
+  invalid_display_quantity,
 };
 
 enum class SelfTradePolicy : std::uint8_t {
@@ -130,6 +131,7 @@ enum class InvariantViolation : std::uint8_t {
   order_side_mismatch,
   order_level_mismatch,
   nonpositive_remaining,
+  invalid_display_state,
   aggregate_overflow,
   level_tail_mismatch,
   level_count_mismatch,
@@ -180,6 +182,12 @@ public:
                                           std::span<Trade> trades) noexcept;
   [[nodiscard]] SubmitResult submit_post_only(OrderId id, Side side, Price price,
                                               Quantity quantity, std::span<Trade> trades) noexcept;
+  [[nodiscard]] SubmitResult submit_iceberg(OrderId id, Side side, Price price, Quantity quantity,
+                                            Quantity display_quantity,
+                                            std::span<Trade> trades) noexcept;
+  [[nodiscard]] SubmitResult submit_iceberg(OrderId id, TraderId trader_id, Side side, Price price,
+                                            Quantity quantity, Quantity display_quantity,
+                                            std::span<Trade> trades) noexcept;
   [[nodiscard]] SubmitResult submit_market(OrderId id, Side side, Quantity quantity,
                                            std::span<Trade> trades) noexcept;
   [[nodiscard]] CancelResult cancel(Handle handle) noexcept;
@@ -222,7 +230,8 @@ private:
                    std::uint64_t& remaining, std::span<Trade> trades,
                    std::uint32_t& trade_count) noexcept;
   [[nodiscard]] Handle rest(OrderId id, TraderId trader_id, Side side, std::uint32_t level_index,
-                            std::uint64_t remaining) noexcept;
+                            std::uint64_t remaining, std::uint64_t display_quantity) noexcept;
+  void move_to_tail(std::uint32_t order_index) noexcept;
   void unlink(Handle handle, std::uint64_t aggregate_reduction) noexcept;
   [[nodiscard]] std::optional<std::uint32_t> best_index(Side side) const noexcept;
   [[nodiscard]] PriceLevel& level(Side side, std::uint32_t index) noexcept;
@@ -244,7 +253,12 @@ private:
   HierarchicalBitmap ask_occupancy_;
   OrderArena arena_;
   std::unique_ptr<TraderId[]> trader_ids_;
+  std::unique_ptr<std::uint64_t[]> display_quantities_;
+  std::unique_ptr<std::uint64_t[]> displayed_remaining_;
   SelfTradePolicy self_trade_policy_;
+  std::unique_ptr<std::uint32_t[]> trade_report_indices_;
+  std::unique_ptr<std::uint32_t[]> trade_report_epochs_;
+  std::uint32_t trade_report_epoch_{};
   std::unique_ptr<std::uint32_t[]> visit_marks_;
   std::uint32_t visit_epoch_{};
 };

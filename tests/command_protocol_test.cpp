@@ -35,4 +35,16 @@ TEST(CommandProtocolTest, RejectsBadLengthVersionHeaderAndPayload) {
   EXPECT_EQ(decode_command_frame(encoded).error(), CommandFrameError::noncanonical_header);
 }
 
+TEST(CommandProtocolTest, RoundTripsIcebergDisplayQuantity) {
+  const CommandPayload payload = CommandPayload::submit_iceberg(
+      OrderId{7U}, Side::sell, Price{101}, Quantity{20U}, Quantity{3U});
+  std::array<std::byte, kEncodedCommandFrameSize> encoded{};
+
+  ASSERT_EQ(encode_command_frame(payload, encoded), CommandFrameError{});
+  const auto decoded = decode_command_frame(encoded);
+  ASSERT_TRUE(decoded.has_value());
+  EXPECT_EQ(*decoded, payload);
+  EXPECT_EQ(decoded->iceberg_display_quantity(), Quantity{3U});
+}
+
 } // namespace matching_engine
