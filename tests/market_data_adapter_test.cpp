@@ -45,7 +45,7 @@ TEST(MarketDataAdapterTest, RejectsUnsupportedMessagesAndSequenceGaps) {
                                   .order_id = OrderId{11U},
                                   .quantity = Quantity{3U},
                                   .type = MarketDataMessageType::replace_order};
-  EXPECT_EQ(adapter.adapt(replace).error(), MarketDataAdaptError::unsupported_message);
+  EXPECT_EQ(adapter.adapt(replace).error(), MarketDataAdaptError::unknown_order);
 
   const MarketDataMessage first{.sequence = 2U,
                                 .order_id = OrderId{11U},
@@ -113,6 +113,25 @@ TEST(MarketDataAdapterTest, MapsDeletesToRecordedGenerationHandle) {
                                   .type = MarketDataMessageType::add_order,
                                   .side = Side::buy};
   EXPECT_TRUE(adapter.adapt(reused).has_value());
+}
+
+TEST(MarketDataAdapterTest, MapsReplacesToRecordedGenerationHandle) {
+  MarketDataAdapter adapter{GatewayValidator{gateway_config()}};
+  adapter.record_applied_event(
+      {.order_id = OrderId{11U}, .handle = Handle{3U, 7U}, .type = EngineEventType::submit_result});
+  const MarketDataMessage replace{.sequence = 1U,
+                                  .order_id = OrderId{11U},
+                                  .quantity = Quantity{2U},
+                                  .type = MarketDataMessageType::replace_order};
+  const auto command = adapter.adapt(replace);
+  ASSERT_TRUE(command.has_value());
+  EXPECT_EQ(command->payload, CommandPayload::amend_quantity(Handle{3U, 7U}, Quantity{2U}));
+
+  const MarketDataMessage unknown{.sequence = 2U,
+                                  .order_id = OrderId{12U},
+                                  .quantity = Quantity{2U},
+                                  .type = MarketDataMessageType::replace_order};
+  EXPECT_EQ(adapter.adapt(unknown).error(), MarketDataAdaptError::unknown_order);
 }
 
 } // namespace matching_engine
