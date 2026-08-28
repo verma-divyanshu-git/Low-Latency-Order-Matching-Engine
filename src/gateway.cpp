@@ -9,27 +9,32 @@ GatewayValidator::GatewayValidator(GatewayConfig config) noexcept : config_{conf
   if (config_.max_orders_per_second == 0U) {
     config_.max_orders_per_second = 1U;
   }
+  if (config_.max_lanes == 0U) {
+    config_.max_lanes = 1U;
+  }
   active_order_ids_.reserve(config_.max_active_orders);
+  rate_windows_.resize(config_.max_lanes);
 }
 
-bool GatewayValidator::rate_limit_exceeded(std::uint64_t logical_time) noexcept {
+bool GatewayValidator::rate_limit_exceeded(LaneId lane_id, std::uint64_t logical_time) noexcept {
   if (config_.max_orders_per_second == 0U) {
     return false;
   }
 
   constexpr std::uint64_t kRateWindowSize = 1'000ULL;
   const std::uint64_t bucket_start = logical_time / kRateWindowSize;
+  RateWindow& window = rate_windows_[lane_id];
 
-  if (current_rate_window_count_ == 0U || bucket_start != current_rate_window_start_) {
-    current_rate_window_start_ = bucket_start;
-    current_rate_window_count_ = 0U;
+  if (window.count == 0U || bucket_start != window.start) {
+    window.start = bucket_start;
+    window.count = 0U;
   }
 
-  if (current_rate_window_count_ >= config_.max_orders_per_second) {
+  if (window.count >= config_.max_orders_per_second) {
     return true;
   }
 
-  ++current_rate_window_count_;
+  ++window.count;
   return false;
 }
 
@@ -45,9 +50,17 @@ std::uint64_t GatewayValidator::absolute_notional(Price price, Quantity quantity
 }
 
 GatewayRejectReason GatewayValidator::validate(OrderId id, Side side, Price price,
-                                              Quantity quantity,
-                                              std::uint64_t logical_time) noexcept {
+                                              Quantity quantity, std::uint64_t logical_time) noexcept {
+  return validate(LaneId{0U}, id, side, price, quantity, logical_time);
+}
+
+GatewayRejectReason GatewayValidator::validate(LaneId lane_id, OrderId id, Side side, Price price,
+                                              Quantity quantity, std::uint64_t logical_time) noexcept {
   (void)side;
+
+  if (lane_id >= config_.max_lanes) {
+    return GatewayRejectReason::invalid_lane;
+  }
 
   if (id.value() == 0U) {
     return GatewayRejectReason::duplicate_order_id;
@@ -74,7 +87,7 @@ GatewayRejectReason GatewayValidator::validate(OrderId id, Side side, Price pric
     return GatewayRejectReason::notional_too_large;
   }
 
-  if (rate_limit_exceeded(logical_time)) {
+  if (rate_limit_exceeded(lane_id, logical_time)) {
     return GatewayRejectReason::rate_limited;
   }
 

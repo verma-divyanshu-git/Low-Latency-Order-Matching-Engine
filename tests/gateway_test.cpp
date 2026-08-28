@@ -70,4 +70,25 @@ TEST(GatewayTest, TracksActiveOrderSetAndAcceptsReusedOrderAfterRelease) {
             GatewayRejectReason::none);
 }
 
+TEST(GatewayTest, EnforcesRateLimitsIndependentlyPerLane) {
+  GatewayConfig config{};
+  config.max_active_orders = 8U;
+  config.max_lanes = 2U;
+  config.max_quantity = Quantity{10U};
+  config.max_notional = 10'000U;
+  config.min_price = Price{0};
+  config.max_price = Price{1'000};
+  config.max_orders_per_second = 1U;
+  GatewayValidator validator{config};
+
+  EXPECT_EQ(validator.validate(LaneId{0U}, OrderId{1U}, Side::buy, Price{100}, Quantity{1U}, 1U),
+            GatewayRejectReason::none);
+  EXPECT_EQ(validator.validate(LaneId{1U}, OrderId{2U}, Side::buy, Price{100}, Quantity{1U}, 1U),
+            GatewayRejectReason::none);
+  EXPECT_EQ(validator.validate(LaneId{0U}, OrderId{3U}, Side::buy, Price{100}, Quantity{1U}, 1U),
+            GatewayRejectReason::rate_limited);
+  EXPECT_EQ(validator.validate(LaneId{2U}, OrderId{4U}, Side::buy, Price{100}, Quantity{1U}, 1U),
+            GatewayRejectReason::invalid_lane);
+}
+
 } // namespace matching_engine
