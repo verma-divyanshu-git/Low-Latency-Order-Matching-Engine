@@ -42,7 +42,7 @@ Integer read_little_endian(std::span<const std::byte> input) noexcept {
          type == MarketDataMessageType::level_update;
 }
 
-[[nodiscard]] constexpr bool has_zero_side_payload(const MarketDataMessage& message) noexcept {
+[[nodiscard]] constexpr bool has_buy_side_sentinel(const MarketDataMessage& message) noexcept {
   return message.side == Side::buy;
 }
 
@@ -52,15 +52,15 @@ Integer read_little_endian(std::span<const std::byte> input) noexcept {
     return is_valid_side(message.side) && message.secondary_order_id == OrderId{0U} &&
            message.secondary_quantity == Quantity{0U} && message.order_count == 0U;
   case MarketDataMessageType::replace_order:
-    return has_zero_side_payload(message) && message.secondary_order_id == OrderId{0U} &&
+    return has_buy_side_sentinel(message) && message.secondary_order_id == OrderId{0U} &&
            message.price == Price{0} && message.secondary_quantity == Quantity{0U} &&
            message.order_count == 0U;
   case MarketDataMessageType::delete_order:
-    return has_zero_side_payload(message) && message.secondary_order_id == OrderId{0U} &&
+    return has_buy_side_sentinel(message) && message.secondary_order_id == OrderId{0U} &&
            message.price == Price{0} && message.quantity == Quantity{0U} &&
            message.secondary_quantity == Quantity{0U} && message.order_count == 0U;
   case MarketDataMessageType::trade:
-    return has_zero_side_payload(message) && message.secondary_quantity == Quantity{0U} &&
+    return has_buy_side_sentinel(message) && message.secondary_quantity == Quantity{0U} &&
            message.order_count == 0U;
   case MarketDataMessageType::level_update:
     return is_valid_side(message.side) && message.order_id == OrderId{0U} &&
@@ -84,10 +84,11 @@ MarketDataFrameError encode_market_data_frame(const MarketDataMessage& message,
     return MarketDataFrameError::invalid_type;
   }
   if (!is_canonical(message)) {
-    return message.type == MarketDataMessageType::add_order ||
-                   message.type == MarketDataMessageType::level_update
-               ? MarketDataFrameError::invalid_side
-               : MarketDataFrameError::noncanonical;
+    return (message.type == MarketDataMessageType::add_order ||
+        message.type == MarketDataMessageType::level_update) &&
+             !is_valid_side(message.side)
+           ? MarketDataFrameError::invalid_side
+           : MarketDataFrameError::noncanonical;
   }
 
   std::fill(output.begin(), output.end(), std::byte{});

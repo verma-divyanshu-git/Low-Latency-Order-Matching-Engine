@@ -88,4 +88,30 @@ TEST(MarketDataProtocolTest, RejectsMalformedFramesAndDetectsSequenceGaps) {
   EXPECT_EQ(validate_market_data_sequence(UINT64_MAX, message), MarketDataFrameError::sequence_gap);
 }
 
+TEST(MarketDataProtocolTest, RejectsNoncanonicalEncodesWithSpecificErrors) {
+  std::array<std::byte, kEncodedMarketDataFrameSize> encoded{};
+  const MarketDataMessage invalid_side{.type = MarketDataMessageType::add_order,
+                                       .side = static_cast<Side>(2U)};
+  EXPECT_EQ(encode_market_data_frame(invalid_side, encoded), MarketDataFrameError::invalid_side);
+
+  const MarketDataMessage invalid_level_side{.type = MarketDataMessageType::level_update,
+                                             .side = static_cast<Side>(2U)};
+  EXPECT_EQ(encode_market_data_frame(invalid_level_side, encoded),
+            MarketDataFrameError::invalid_side);
+
+  const MarketDataMessage invalid_add{.secondary_order_id = OrderId{1U},
+                                      .type = MarketDataMessageType::add_order};
+  EXPECT_EQ(encode_market_data_frame(invalid_add, encoded), MarketDataFrameError::noncanonical);
+
+  const MarketDataMessage invalid_replace{.price = Price{1},
+                                          .type = MarketDataMessageType::replace_order};
+  EXPECT_EQ(encode_market_data_frame(invalid_replace, encoded),
+            MarketDataFrameError::noncanonical);
+
+  const MarketDataMessage invalid_level{.secondary_quantity = Quantity{1U},
+                                        .type = MarketDataMessageType::level_update};
+  EXPECT_EQ(encode_market_data_frame(invalid_level, encoded),
+            MarketDataFrameError::noncanonical);
+}
+
 } // namespace matching_engine
