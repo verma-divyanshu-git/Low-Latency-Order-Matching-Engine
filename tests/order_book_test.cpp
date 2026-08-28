@@ -47,6 +47,11 @@ public:
     return book.submit_limit(OrderId{id}, side, Price{price}, Quantity{quantity}, tif, trades);
   }
 
+  [[nodiscard]] SubmitResult post_only(std::uint64_t id, Side side, std::int64_t price,
+                                       std::uint64_t quantity) {
+    return book.submit_post_only(OrderId{id}, side, Price{price}, Quantity{quantity}, trades);
+  }
+
   [[nodiscard]] SubmitResult market(std::uint64_t id, Side side, std::uint64_t quantity) {
     return book.submit_market(OrderId{id}, side, Quantity{quantity}, trades);
   }
@@ -442,6 +447,29 @@ TEST_F(OrderBookTest, IocReportsPartialNoFillAndFullFillWithoutRestingResidual) 
   expect_result(full, RejectReason::none, 2, 0, 1);
   EXPECT_EQ(trades[0], (Trade{OrderId{22}, OrderId{11}, Price{105}, Quantity{2}}));
   EXPECT_EQ(book.best_ask(), std::nullopt);
+}
+
+TEST_F(OrderBookTest, CrossingPostOnlyRejectsWithoutMutatingMaker) {
+  ASSERT_EQ(limit(1U, Side::sell, 103, 4).reject_reason, RejectReason::none);
+
+  const SubmitResult result = post_only(2U, Side::buy, 103, 3U);
+
+  expect_result(result, RejectReason::post_only_would_cross, 0U, 3U, 0U);
+  expect_level(book, Side::sell, 103, 4U, 1U);
+  expect_level(book, Side::buy, 103, 0U, 0U);
+  expect_invariants(book, 1U);
+}
+
+TEST_F(OrderBookTest, NoncrossingPostOnlyRestsNormally) {
+  const SubmitResult result = post_only(1U, Side::buy, 102, 3U);
+
+  ASSERT_EQ(result.reject_reason, RejectReason::none);
+  EXPECT_EQ(result.executed_quantity, Quantity{0U});
+  EXPECT_EQ(result.unfilled_quantity, Quantity{3U});
+  EXPECT_EQ(result.trade_count, 0U);
+  EXPECT_NE(result.resting_handle, kNoHandle);
+  expect_level(book, Side::buy, 102, 3U, 1U);
+  expect_invariants(book, 1U);
 }
 
 TEST_F(OrderBookTest, FokInsufficientAcrossLevelsLeavesBookAndTradesUnchanged) {

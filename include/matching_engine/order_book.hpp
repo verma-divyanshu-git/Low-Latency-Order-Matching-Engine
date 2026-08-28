@@ -166,6 +166,8 @@ public:
   [[nodiscard]] SubmitResult submit_limit(OrderId id, Side side, Price price, Quantity quantity,
                                           TimeInForce time_in_force,
                                           std::span<Trade> trades) noexcept;
+  [[nodiscard]] SubmitResult submit_post_only(OrderId id, Side side, Price price,
+                                              Quantity quantity, std::span<Trade> trades) noexcept;
   [[nodiscard]] SubmitResult submit_market(OrderId id, Side side, Quantity quantity,
                                            std::span<Trade> trades) noexcept;
   [[nodiscard]] CancelResult cancel(Handle handle) noexcept;
@@ -174,6 +176,8 @@ public:
                                      std::span<Trade> trades) noexcept;
   [[nodiscard]] RejectReason preflight_limit(Side side, Price price, Quantity quantity,
                                              TimeInForce time_in_force) const noexcept;
+  [[nodiscard]] RejectReason preflight_post_only(Side side, Price price,
+                                                 Quantity quantity) const noexcept;
   [[nodiscard]] RejectReason preflight_market(Side side, Quantity quantity) const noexcept;
   [[nodiscard]] RejectReason preflight_replace(Handle handle, Price new_price,
                                                Quantity new_quantity) const noexcept;
