@@ -48,6 +48,17 @@ void write_snapshot_u64(std::span<std::byte> bytes, std::size_t offset, std::uin
   }
 }
 
+void write_market_data_file(const std::filesystem::path& path,
+                            std::span<const MarketDataMessage> messages) {
+  std::ofstream output{path, std::ios::binary};
+  for (const MarketDataMessage& message : messages) {
+    std::array<std::byte, kEncodedMarketDataFrameSize> frame{};
+    ASSERT_EQ(encode_market_data_frame(message, frame), MarketDataFrameError::none);
+    output.write(reinterpret_cast<const char*>(frame.data()),
+                 static_cast<std::streamsize>(frame.size()));
+  }
+}
+
 template <typename Mutation>
 void expect_snapshot_mutation(const std::vector<std::byte>& source, Mutation mutation,
                               SnapshotError expected) {
@@ -96,6 +107,46 @@ TEST(ReplayFingerprintTest, StreamsCanonicalEventBytes) {
   EXPECT_EQ(fingerprint.event_count(), 1U);
   EXPECT_EQ(fingerprint.byte_count(), kEncodedEngineEventSize);
   EXPECT_EQ(fingerprint.crc32c(), 0x48a49a71U);
+}
+
+TEST(MarketDataReplayTest, ReplaysValidatedFramesThroughGatewayAndMatcher) {
+  TemporaryDirectory temporary;
+  const auto path = temporary.path() / "market-data.bin";
+  const std::array<MarketDataMessage, 2U> messages{
+      MarketDataMessage{.sequence = 1U,
+                        .order_id = OrderId{1U},
+                        .price = Price{101},
+                        .quantity = Quantity{2U},
+                        .type = MarketDataMessageType::add_order,
+                        .side = Side::sell},
+      MarketDataMessage{.sequence = 2U,
+                        .order_id = OrderId{2U},
+                        .price = Price{101},
+                        .quantity = Quantity{2U},
+                        .type = MarketDataMessageType::add_order,
+                        .side = Side::buy}};
+  write_market_data_file(path, messages);
+  auto input = MarketDataInputStream::open(path);
+  ASSERT_TRUE(input.has_value());
+  GatewayConfig config{.max_active_orders = 4U,
+                       .max_lanes = 1U,
+                       .max_quantity = Quantity{10U},
+                       .max_notional = 1'000U,
+                       .min_price = Price{100},
+                       .max_price = Price{102},
+                       .max_orders_per_second = 4U};
+  MarketDataAdapter adapter{GatewayValidator{config}};
+  SequencedEngine engine{PriceDomain{Price{100}, 3U}, 4U, Quantity{10U}};
+  std::array<EngineEvent, 5U> events{};
+
+  const auto replayed = replay_market_data(*input, adapter, engine, events);
+  ASSERT_TRUE(replayed.has_value());
+  EXPECT_EQ(replayed->commands_applied, 2U);
+  EXPECT_EQ(replayed->first_sequence, Sequence{1U});
+  EXPECT_EQ(replayed->last_sequence, Sequence{2U});
+  EXPECT_EQ(replayed->fingerprint.event_count(), 3U);
+  EXPECT_EQ(engine.order_book().best_bid(), std::nullopt);
+  EXPECT_EQ(engine.order_book().best_ask(), std::nullopt);
 }
 
 TEST(SnapshotCodecTest, EmptyStateHasStableSizeAndRoundTrips) {
