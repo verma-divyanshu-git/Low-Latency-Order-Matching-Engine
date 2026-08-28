@@ -126,4 +126,50 @@ TEST(DeterministicLaneMergeTest, ProducesIdenticalOutputForArrivalPermutations) 
   EXPECT_EQ(baseline[3].payload.order_id, 2U);
 }
 
+TEST(DeterministicLaneMergeTest, BusyLaneDoesNotStarveEarlierVisibleCommand) {
+  LaneQueue busy_lane{3U};
+  LaneQueue earlier_lane{1U};
+  auto busy_producer = busy_lane.claim_producer();
+  auto earlier_producer = earlier_lane.claim_producer();
+  auto busy_consumer = busy_lane.claim_consumer();
+  auto earlier_consumer = earlier_lane.claim_consumer();
+  ASSERT_TRUE(busy_producer && earlier_producer && busy_consumer && earlier_consumer);
+
+  ASSERT_TRUE(busy_producer->try_push(
+      LaneCommand{.payload = CommandPayload::submit_market(OrderId{1U}, Side::buy,
+                                                            Quantity{1U}),
+                  .logical_time = 20U,
+                  .lane_id = 0U,
+                  .lane_sequence = 1U}));
+  ASSERT_TRUE(busy_producer->try_push(
+      LaneCommand{.payload = CommandPayload::submit_market(OrderId{2U}, Side::buy,
+                                                            Quantity{1U}),
+                  .logical_time = 30U,
+                  .lane_id = 0U,
+                  .lane_sequence = 2U}));
+  ASSERT_TRUE(busy_producer->try_push(
+      LaneCommand{.payload = CommandPayload::submit_market(OrderId{3U}, Side::buy,
+                                                            Quantity{1U}),
+                  .logical_time = 40U,
+                  .lane_id = 0U,
+                  .lane_sequence = 3U}));
+  ASSERT_TRUE(earlier_producer->try_push(
+      LaneCommand{.payload = CommandPayload::submit_market(OrderId{4U}, Side::sell,
+                                                            Quantity{1U}),
+                  .logical_time = 10U,
+                  .lane_id = 1U,
+                  .lane_sequence = 1U}));
+
+  std::vector<LaneQueue::Consumer> consumers;
+  consumers.push_back(std::move(*busy_consumer));
+  consumers.push_back(std::move(*earlier_consumer));
+  DeterministicLaneMerger merger{std::move(consumers)};
+  LaneCommand command{};
+
+  ASSERT_TRUE(merger.try_pop(command));
+  EXPECT_EQ(command.payload.order_id, 4U);
+  ASSERT_TRUE(merger.try_pop(command));
+  EXPECT_EQ(command.payload.order_id, 1U);
+}
+
 } // namespace matching_engine
