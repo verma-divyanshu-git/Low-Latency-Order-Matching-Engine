@@ -121,6 +121,23 @@ RejectReason OrderBook::preflight_limit(Side side, Price price, Quantity quantit
   return RejectReason::none;
 }
 
+RejectReason OrderBook::preflight_post_only(Side side, Price price,
+                                            Quantity quantity) const noexcept {
+  const RejectReason basic = preflight(side, quantity);
+  if (basic != RejectReason::none) {
+    return basic;
+  }
+  const auto level_index = domain_.index_of(price);
+  if (!level_index.has_value()) {
+    return RejectReason::price_out_of_domain;
+  }
+  if (has_crossing_order(side, *level_index)) {
+    return RejectReason::post_only_would_cross;
+  }
+  return arena_.size() == arena_.capacity() ? RejectReason::order_capacity_exhausted
+                                            : RejectReason::none;
+}
+
 RejectReason OrderBook::preflight_market(Side side, Quantity quantity) const noexcept {
   return preflight(side, quantity);
 }
@@ -173,6 +190,18 @@ SubmitResult OrderBook::submit_limit(OrderId id, Side side, Price price, Quantit
           .unfilled_quantity = Quantity{remaining},
           .trade_count = trade_count,
           .resting_handle = handle};
+}
+
+SubmitResult OrderBook::submit_post_only(OrderId id, Side side, Price price, Quantity quantity,
+                                         std::span<Trade> trades) noexcept {
+  if (trades.size() < required_trade_capacity()) {
+    return rejected(RejectReason::insufficient_trade_capacity, quantity);
+  }
+  const RejectReason preflight_result = preflight_post_only(side, price, quantity);
+  if (preflight_result != RejectReason::none) {
+    return rejected(preflight_result, quantity);
+  }
+  return submit_limit(id, side, price, quantity, TimeInForce::gtc, trades);
 }
 
 bool OrderBook::can_fully_fill(Side side, std::uint32_t limit_index,
