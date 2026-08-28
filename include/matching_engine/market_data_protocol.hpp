@@ -30,6 +30,7 @@ struct MarketDataMessage {
   Quantity secondary_quantity{0U};
   std::uint32_t order_count{};
   MarketDataMessageType type{MarketDataMessageType::add_order};
+  // Non-side-specific messages use buy as their canonical side sentinel.
   Side side{Side::buy};
 
   constexpr bool operator==(const MarketDataMessage&) const noexcept = default;
