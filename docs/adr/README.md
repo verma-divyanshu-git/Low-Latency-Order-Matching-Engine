@@ -21,3 +21,5 @@ A new record supersedes a decision when the architecture changes.
 - [ADR-0012: Deterministic command boundary and fixed-capacity journal](0012-deterministic-command-journal.md)
 - [ADR-0013: Versioned snapshots and deterministic replay verification](0013-versioned-snapshots-and-replay-verification.md)
 - [ADR-0014: Bounded SPSC durable matching pipeline](0014-bounded-spsc-durable-pipeline.md)
+- [ADR-0015: Deterministic lane ingress and gateway validation](0015-deterministic-lane-ingress-and-gateway.md)
+- [ADR-0016: Bounded BBO snapshots and caller-owned runtime controls](0016-bounded-bbo-and-runtime-controls.md)
