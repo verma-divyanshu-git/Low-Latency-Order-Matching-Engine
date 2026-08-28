@@ -34,10 +34,11 @@ Last updated: 2026-08-28.
 - Merged local feature branches were deleted.
 - The obsolete `chore/stabilize-ci-and-identity` branch was reconciled and deleted.
   Its gateway implementation and build registrations were already in `main`, while its CI and CMake state was outdated.
+- Phase 1 is complete.
+  The `main` CI gate is green and `develop` is the only retained integration branch besides `main`.
 
 ### Gates still open
 
-- Run and record the remaining fresh local preset matrix required by Phase 1: release, ASan, UBSan, TSan, fuzz, and measurement.
 - Keep this document and `plan-update-as-u-go-what-done-what-not.md` synchronized after each merged PR.
 
 ## Verified baseline on main
@@ -51,12 +52,12 @@ Last updated: 2026-08-28.
 
 ### Phase 1: stabilize CI and branch hygiene
 
-Finish the open gates listed above.
-Do not begin a new implementation feature until the PR #9 checks are green and the old branch is reconciled.
-Record Phase 1 completion as plain status text rather than stale hashes.
+Completed on 2026-08-28.
+The full local non-debug preset matrix remains useful repeatable evidence but is not a blocker after green `main` CI.
 
 ### Phase 2: audit and finish the concurrency boundary
 
+The first remaining concern is the lane-merge arrival-permutation oracle.
 Audit the existing lane merge, gateway, BBO, publication, and runtime-control implementations against the requirements below.
 Use one pull request per numbered concern.
 
