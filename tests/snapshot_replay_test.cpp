@@ -112,7 +112,7 @@ TEST(ReplayFingerprintTest, StreamsCanonicalEventBytes) {
 TEST(MarketDataReplayTest, ReplaysValidatedFramesThroughGatewayAndMatcher) {
   TemporaryDirectory temporary;
   const auto path = temporary.path() / "market-data.bin";
-  const std::array<MarketDataMessage, 2U> messages{
+  const std::array<MarketDataMessage, 3U> messages{
       MarketDataMessage{.sequence = 1U,
                         .order_id = OrderId{1U},
                         .price = Price{101},
@@ -124,7 +124,10 @@ TEST(MarketDataReplayTest, ReplaysValidatedFramesThroughGatewayAndMatcher) {
                         .price = Price{101},
                         .quantity = Quantity{2U},
                         .type = MarketDataMessageType::add_order,
-                        .side = Side::buy}};
+                        .side = Side::buy},
+      MarketDataMessage{.sequence = 3U,
+                        .order_id = OrderId{1U},
+                        .type = MarketDataMessageType::delete_order}};
   write_market_data_file(path, messages);
   auto input = MarketDataInputStream::open(path);
   ASSERT_TRUE(input.has_value());
@@ -141,10 +144,10 @@ TEST(MarketDataReplayTest, ReplaysValidatedFramesThroughGatewayAndMatcher) {
 
   const auto replayed = replay_market_data(*input, adapter, engine, events);
   ASSERT_TRUE(replayed.has_value());
-  EXPECT_EQ(replayed->commands_applied, 2U);
+  EXPECT_EQ(replayed->commands_applied, 3U);
   EXPECT_EQ(replayed->first_sequence, Sequence{1U});
-  EXPECT_EQ(replayed->last_sequence, Sequence{2U});
-  EXPECT_EQ(replayed->fingerprint.event_count(), 3U);
+  EXPECT_EQ(replayed->last_sequence, Sequence{3U});
+  EXPECT_EQ(replayed->fingerprint.event_count(), 4U);
   EXPECT_EQ(engine.order_book().best_bid(), std::nullopt);
   EXPECT_EQ(engine.order_book().best_ask(), std::nullopt);
 }

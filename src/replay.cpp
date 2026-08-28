@@ -218,6 +218,7 @@ replay_market_data(MarketDataInputStream& input, MarketDataAdapter& adapter, Seq
     result.last_sequence = command->sequence;
     ++result.commands_applied;
     for (std::size_t event_index = 0U; event_index < applied.event_count; ++event_index) {
+      adapter.record_applied_event(event_buffer[event_index]);
       if (result.fingerprint.add(event_buffer[event_index]) != EventCodecError::none) {
         return std::unexpected{MarketDataReplayError::apply};
       }

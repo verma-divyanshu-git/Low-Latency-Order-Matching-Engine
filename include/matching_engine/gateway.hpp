@@ -43,6 +43,9 @@ public:
   [[nodiscard]] GatewayRejectReason validate(LaneId lane_id, OrderId id, Side side,
                                              Price price, Quantity quantity,
                                              std::uint64_t logical_time) noexcept;
+  [[nodiscard]] std::size_t max_active_orders() const noexcept {
+    return config_.max_active_orders;
+  }
 
   void release(OrderId id) noexcept;
 

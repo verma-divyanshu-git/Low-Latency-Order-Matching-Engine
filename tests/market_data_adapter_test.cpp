@@ -85,4 +85,34 @@ TEST(MarketDataAdapterTest, RejectsAtGatewayBeforeSequencing) {
   EXPECT_EQ(adapter.last_gateway_reject_reason(), GatewayRejectReason::duplicate_order_id);
 }
 
+TEST(MarketDataAdapterTest, MapsDeletesToRecordedGenerationHandle) {
+  MarketDataAdapter adapter{GatewayValidator{gateway_config()}};
+  const MarketDataMessage add{.sequence = 1U,
+                              .order_id = OrderId{11U},
+                              .price = Price{101},
+                              .quantity = Quantity{1U},
+                              .type = MarketDataMessageType::add_order,
+                              .side = Side::buy};
+  ASSERT_TRUE(adapter.adapt(add).has_value());
+  adapter.record_applied_event(
+      {.order_id = OrderId{11U}, .handle = Handle{3U, 7U}, .type = EngineEventType::submit_result});
+
+  const MarketDataMessage remove{.sequence = 2U,
+                                 .order_id = OrderId{11U},
+                                 .type = MarketDataMessageType::delete_order};
+  const auto command = adapter.adapt(remove);
+  ASSERT_TRUE(command.has_value());
+  EXPECT_EQ(command->payload, CommandPayload::cancel(Handle{3U, 7U}));
+
+  adapter.record_applied_event(
+      {.order_id = OrderId{11U}, .handle = Handle{3U, 7U}, .type = EngineEventType::cancel_result});
+  const MarketDataMessage reused{.sequence = 3U,
+                                  .order_id = OrderId{11U},
+                                  .price = Price{101},
+                                  .quantity = Quantity{1U},
+                                  .type = MarketDataMessageType::add_order,
+                                  .side = Side::buy};
+  EXPECT_TRUE(adapter.adapt(reused).has_value());
+}
+
 } // namespace matching_engine
