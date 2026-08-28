@@ -138,6 +138,10 @@ private:
     return slots_[index].order;
   }
 
+  [[nodiscard]] const Order& order_at(std::uint32_t index) const noexcept {
+    return slots_[index].order;
+  }
+
   [[nodiscard]] Handle handle_at(std::uint32_t index) const noexcept {
     return {.index = index, .generation = slots_[index].generation};
   }
