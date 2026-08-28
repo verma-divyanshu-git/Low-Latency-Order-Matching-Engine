@@ -66,6 +66,12 @@ enum class RejectReason : std::uint8_t {
   order_capacity_exhausted,
   fok_not_fillable,
   post_only_would_cross,
+  self_trade_prevented,
+};
+
+enum class SelfTradePolicy : std::uint8_t {
+  none,
+  cancel_taker,
 };
 
 struct SubmitResult {
