@@ -11,6 +11,12 @@ MarketDataAdapter::adapt(const MarketDataMessage& message) noexcept {
   if (message.type != MarketDataMessageType::add_order) {
     return std::unexpected{MarketDataAdaptError::unsupported_message};
   }
+  last_gateway_reject_reason_ =
+      gateway_.validate(message.order_id, message.side, message.price, message.quantity,
+                        message.sequence);
+  if (last_gateway_reject_reason_ != GatewayRejectReason::none) {
+    return std::unexpected{MarketDataAdaptError::invalid_command};
+  }
   const CommandPayload payload =
       CommandPayload::submit_limit(message.order_id, message.side, message.price, message.quantity);
   const auto command = sequencer_.stamp(payload, message.sequence);
