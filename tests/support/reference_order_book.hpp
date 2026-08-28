@@ -43,13 +43,21 @@ struct ModelAmendResult {
 class ReferenceOrderBook {
 public:
   ReferenceOrderBook(Price minimum, std::uint32_t tick_count, std::size_t max_orders,
-                     Quantity max_order_quantity)
+                     Quantity max_order_quantity, SelfTradePolicy self_trade_policy = SelfTradePolicy::none)
       : minimum_{minimum.ticks()},
         maximum_{minimum.ticks() + static_cast<std::int64_t>(tick_count - 1U)},
-        max_orders_{max_orders}, max_order_quantity_{max_order_quantity.value()} {}
+        max_orders_{max_orders}, max_order_quantity_{max_order_quantity.value()},
+        self_trade_policy_{self_trade_policy} {}
 
   [[nodiscard]] ModelSubmitResult submit_limit(OrderId id, Side side, Price price,
                                                Quantity quantity, TimeInForce time_in_force,
+                                               std::size_t trade_capacity) {
+    return submit_limit(id, TraderId{0U}, side, price, quantity, time_in_force, trade_capacity);
+  }
+
+  [[nodiscard]] ModelSubmitResult submit_limit(OrderId id, TraderId trader_id, Side side,
+                                               Price price, Quantity quantity,
+                                               TimeInForce time_in_force,
                                                std::size_t trade_capacity) {
     if (!valid_time_in_force(time_in_force)) {
       return rejected(RejectReason::invalid_time_in_force, quantity);
@@ -64,6 +72,10 @@ public:
     if (time_in_force == TimeInForce::fok && available_quantity(side, price) < quantity.value()) {
       return rejected(RejectReason::fok_not_fillable, quantity);
     }
+    if (self_trade_policy_ == SelfTradePolicy::cancel_taker &&
+        would_self_trade(trader_id, side, price)) {
+      return rejected(RejectReason::self_trade_prevented, quantity);
+    }
     if (time_in_force == TimeInForce::gtc && live_order_count_ == max_orders_ &&
         !has_crossing_order(side, price)) {
       return rejected(RejectReason::order_capacity_exhausted, quantity);
@@ -75,7 +87,7 @@ public:
     result.executed_quantity = Quantity{quantity.value() - remaining};
     result.unfilled_quantity = Quantity{remaining};
     if (time_in_force == TimeInForce::gtc && remaining != 0U) {
-      result.resting_token = rest(id, side, price, Quantity{remaining});
+      result.resting_token = rest(id, trader_id, side, price, Quantity{remaining});
     }
     return result;
   }
@@ -228,6 +240,7 @@ private:
   struct ModelOrder {
     ModelToken token;
     OrderId id;
+    TraderId trader_id;
     Side side;
     Quantity remaining;
   };
@@ -279,6 +292,34 @@ private:
       return !asks_.empty() && asks_.begin()->first <= price.ticks();
     }
     return !bids_.empty() && bids_.rbegin()->first >= price.ticks();
+  }
+
+  [[nodiscard]] bool would_self_trade(TraderId trader_id, Side side, Price limit) const {
+    const Levels& makers = side == Side::buy ? asks_ : bids_;
+    if (side == Side::buy) {
+      for (const auto& [price, orders] : makers) {
+        if (price > limit.ticks()) {
+          break;
+        }
+        for (const ModelOrder& order : orders) {
+          if (order.trader_id == trader_id) {
+            return true;
+          }
+        }
+      }
+    } else {
+      for (auto level = makers.rbegin(); level != makers.rend(); ++level) {
+        if (level->first < limit.ticks()) {
+          break;
+        }
+        for (const ModelOrder& order : level->second) {
+          if (order.trader_id == trader_id) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
   }
 
   [[nodiscard]] std::uint64_t available_quantity(Side side, Price limit) const {
@@ -358,10 +399,11 @@ private:
     }
   }
 
-  [[nodiscard]] ModelToken rest(OrderId id, Side side, Price price, Quantity remaining) {
+  [[nodiscard]] ModelToken rest(OrderId id, TraderId trader_id, Side side, Price price,
+                                 Quantity remaining) {
     const ModelToken token = next_token_++;
     Levels& levels = side == Side::buy ? bids_ : asks_;
-    levels[price.ticks()].push_back(ModelOrder{token, id, side, remaining});
+    levels[price.ticks()].push_back(ModelOrder{token, id, trader_id, side, remaining});
     ++live_order_count_;
     return token;
   }
@@ -384,6 +426,7 @@ private:
   std::int64_t maximum_;
   std::size_t max_orders_;
   std::uint64_t max_order_quantity_;
+  SelfTradePolicy self_trade_policy_;
   Levels bids_;
   Levels asks_;
   std::size_t live_order_count_{};

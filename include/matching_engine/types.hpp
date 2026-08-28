@@ -48,6 +48,20 @@ private:
   std::uint64_t value_;
 };
 
+class TraderId {
+public:
+  explicit constexpr TraderId(std::uint64_t value) noexcept : value_{value} {}
+
+  [[nodiscard]] constexpr std::uint64_t value() const noexcept {
+    return value_;
+  }
+
+  constexpr auto operator<=>(const TraderId&) const noexcept = default;
+
+private:
+  std::uint64_t value_;
+};
+
 class Sequence {
 public:
   explicit constexpr Sequence(std::uint64_t value) noexcept : value_{value} {}

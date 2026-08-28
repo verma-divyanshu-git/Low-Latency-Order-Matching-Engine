@@ -89,5 +89,38 @@ TEST(ReferenceOrderBookTest, RestsNoncrossingPostOnlyOrder) {
             (OrderInfo{OrderId{1U}, Side::buy, Price{40}, Quantity{3U}}));
 }
 
+TEST(ReferenceOrderBookTest, CancelTakerPreventsSelfTradeByTraderIdentity) {
+  ReferenceOrderBook book{Price{0}, 101U, 4U, Quantity{50U}, SelfTradePolicy::cancel_taker};
+  const ModelSubmitResult maker = book.submit_limit(OrderId{1U}, TraderId{7U}, Side::sell,
+                                                    Price{40}, Quantity{5U}, TimeInForce::gtc, 4U);
+  ASSERT_EQ(maker.reject_reason, RejectReason::none);
+  ASSERT_TRUE(maker.resting_token.has_value());
+
+  const ModelSubmitResult blocked = book.submit_limit(OrderId{2U}, TraderId{7U}, Side::buy,
+                                                      Price{40}, Quantity{3U}, TimeInForce::gtc, 4U);
+
+  EXPECT_EQ(blocked.reject_reason, RejectReason::self_trade_prevented);
+  EXPECT_EQ(blocked.executed_quantity, Quantity{0U});
+  EXPECT_EQ(blocked.unfilled_quantity, Quantity{3U});
+  EXPECT_TRUE(blocked.trades.empty());
+  EXPECT_EQ(book.order_info(*maker.resting_token),
+            (OrderInfo{OrderId{1U}, Side::sell, Price{40}, Quantity{5U}}));
+}
+
+TEST(ReferenceOrderBookTest, AllowsDifferentTradersUnderCancelTakerPolicy) {
+  ReferenceOrderBook book{Price{0}, 101U, 4U, Quantity{50U}, SelfTradePolicy::cancel_taker};
+  ASSERT_EQ(book.submit_limit(OrderId{1U}, TraderId{7U}, Side::sell, Price{40}, Quantity{5U},
+                              TimeInForce::gtc, 4U)
+                .reject_reason,
+            RejectReason::none);
+
+  const ModelSubmitResult matched = book.submit_limit(OrderId{2U}, TraderId{8U}, Side::buy,
+                                                      Price{40}, Quantity{3U}, TimeInForce::gtc, 4U);
+
+  EXPECT_EQ(matched.reject_reason, RejectReason::none);
+  ASSERT_EQ(matched.trades.size(), 1U);
+  EXPECT_EQ(matched.trades.front(), (Trade{OrderId{2U}, OrderId{1U}, Price{40}, Quantity{3U}}));
+}
+
 } // namespace
 } // namespace matching_engine::test
