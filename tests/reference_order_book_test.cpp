@@ -56,5 +56,38 @@ TEST(ReferenceOrderBookTest, ModelsCancelAmendReplaceAndCapacityRejections) {
   EXPECT_EQ(book.live_order_count(), 0U);
 }
 
+TEST(ReferenceOrderBookTest, RejectsCrossingPostOnlyWithoutMutatingBook) {
+  ReferenceOrderBook book{Price{0}, 101U, 4U, Quantity{50U}};
+  ASSERT_EQ(book.submit_limit(OrderId{1U}, Side::sell, Price{40}, Quantity{5U},
+                              TimeInForce::gtc, 4U)
+                .reject_reason,
+            RejectReason::none);
+
+  const ModelSubmitResult rejected =
+      book.submit_post_only(OrderId{2U}, Side::buy, Price{40}, Quantity{3U}, 4U);
+
+  EXPECT_EQ(rejected.reject_reason, RejectReason::post_only_would_cross);
+  EXPECT_EQ(rejected.executed_quantity, Quantity{0U});
+  EXPECT_EQ(rejected.unfilled_quantity, Quantity{3U});
+  EXPECT_TRUE(rejected.trades.empty());
+  EXPECT_FALSE(rejected.resting_token.has_value());
+  EXPECT_EQ(book.live_order_count(), 1U);
+  EXPECT_EQ(book.best_ask(), Price{40});
+}
+
+TEST(ReferenceOrderBookTest, RestsNoncrossingPostOnlyOrder) {
+  ReferenceOrderBook book{Price{0}, 101U, 4U, Quantity{50U}};
+
+  const ModelSubmitResult accepted =
+      book.submit_post_only(OrderId{1U}, Side::buy, Price{40}, Quantity{3U}, 4U);
+
+  EXPECT_EQ(accepted.reject_reason, RejectReason::none);
+  EXPECT_EQ(accepted.executed_quantity, Quantity{0U});
+  EXPECT_EQ(accepted.unfilled_quantity, Quantity{3U});
+  ASSERT_TRUE(accepted.resting_token.has_value());
+  EXPECT_EQ(book.order_info(*accepted.resting_token),
+            (OrderInfo{OrderId{1U}, Side::buy, Price{40}, Quantity{3U}}));
+}
+
 } // namespace
 } // namespace matching_engine::test

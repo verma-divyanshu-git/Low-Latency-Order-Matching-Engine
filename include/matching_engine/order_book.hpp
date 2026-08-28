@@ -65,6 +65,7 @@ enum class RejectReason : std::uint8_t {
   insufficient_trade_capacity,
   order_capacity_exhausted,
   fok_not_fillable,
+  post_only_would_cross,
 };
 
 struct SubmitResult {
