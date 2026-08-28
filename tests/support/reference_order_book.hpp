@@ -94,6 +94,22 @@ public:
     return result;
   }
 
+  [[nodiscard]] ModelSubmitResult submit_post_only(OrderId id, Side side, Price price,
+                                                    Quantity quantity,
+                                                    std::size_t trade_capacity) {
+    const RejectReason invalid = validate(side, quantity, trade_capacity);
+    if (invalid != RejectReason::none) {
+      return rejected(invalid, quantity);
+    }
+    if (!contains(price)) {
+      return rejected(RejectReason::price_out_of_domain, quantity);
+    }
+    if (has_crossing_order(side, price)) {
+      return rejected(RejectReason::post_only_would_cross, quantity);
+    }
+    return submit_limit(id, side, price, quantity, TimeInForce::gtc, trade_capacity);
+  }
+
   [[nodiscard]] ModelCancelResult cancel(ModelToken token) {
     const auto location = locate(token);
     if (!location.has_value()) {
