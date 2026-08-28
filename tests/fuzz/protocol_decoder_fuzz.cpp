@@ -17,7 +17,7 @@ void fuzz_command(std::span<const std::byte> input) {
   }
   std::array<std::byte, matching_engine::kEncodedCommandFrameSize> output{};
   if (matching_engine::encode_command_frame(*payload, output) !=
-      matching_engine::CommandFrameError::none) {
+      matching_engine::CommandFrameError{}) {
     __builtin_trap();
   }
 }
