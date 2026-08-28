@@ -188,4 +188,44 @@ replay_journal(MmapJournal& journal, SequencedEngine& engine, Sequence snapshot_
   return result;
 }
 
+std::expected<ReplayResult, MarketDataReplayError>
+replay_market_data(MarketDataInputStream& input, MarketDataAdapter& adapter, SequencedEngine& engine,
+                   std::span<EngineEvent> event_buffer) noexcept {
+  ReplayResult result{};
+  if (event_buffer.size() < engine.maximum_event_capacity()) {
+    return std::unexpected{MarketDataReplayError::apply};
+  }
+
+  for (;;) {
+    const auto message = input.read_next();
+    if (!message.has_value()) {
+      return std::unexpected{MarketDataReplayError::input};
+    }
+    if (!message->has_value()) {
+      return result;
+    }
+    const auto command = adapter.adapt(**message);
+    if (!command.has_value()) {
+      return std::unexpected{MarketDataReplayError::adapter};
+    }
+    const ApplyResult applied = engine.apply(*command, event_buffer);
+    if (applied.status != ApplyStatus::applied) {
+      return std::unexpected{MarketDataReplayError::apply};
+    }
+    if (result.commands_applied == 0U) {
+      result.first_sequence = command->sequence;
+    }
+    result.last_sequence = command->sequence;
+    ++result.commands_applied;
+    for (std::size_t event_index = 0U; event_index < applied.event_count; ++event_index) {
+      if (result.fingerprint.add(event_buffer[event_index]) != EventCodecError::none) {
+        return std::unexpected{MarketDataReplayError::apply};
+      }
+    }
+    if (engine.order_book().check_invariants().violation != InvariantViolation::none) {
+      return std::unexpected{MarketDataReplayError::invariant};
+    }
+  }
+}
+
 } // namespace matching_engine
