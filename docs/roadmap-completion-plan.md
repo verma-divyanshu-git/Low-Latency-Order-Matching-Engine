@@ -36,6 +36,15 @@ Last updated: 2026-08-28.
   Its gateway implementation and build registrations were already in `main`, while its CI and CMake state was outdated.
 - Phase 1 is complete.
   The `main` CI gate is green and `develop` is the only retained integration branch besides `main`.
+- PR #13 added the lane-merge arrival-permutation oracle.
+- PR #14 added bounded per-lane gateway rate limits and invalid-lane rejection.
+- PR #15 added concurrent BBO reader coverage and exposed a torn-read defect on macOS.
+- PR #16 fixed BBO seqlock ordering, and every CI job passed.
+- PR #17 added lane-starvation coverage.
+- PR #18 added ADR-0015 and ADR-0016.
+- PR #19 routes market-data add orders through gateway validation before sequence assignment.
+- Phase 2 is complete.
+  Its lane, gateway, BBO, publication, runtime-control, threaded pipeline, and ADR requirements are implemented and covered.
 
 ### Gates still open
 
@@ -57,8 +66,8 @@ The full local non-debug preset matrix remains useful repeatable evidence but is
 
 ### Phase 2: audit and finish the concurrency boundary
 
-The first remaining concern is the lane-merge arrival-permutation oracle.
-Audit the existing lane merge, gateway, BBO, publication, and runtime-control implementations against the requirements below.
+Completed on 2026-08-28.
+The listed requirements remain the acceptance record for the implementation and regression suite.
 Use one pull request per numbered concern.
 
 1. Prove merge order uses logical time plus lane identity and is invariant under arrival permutations.
