@@ -472,6 +472,44 @@ TEST_F(OrderBookTest, NoncrossingPostOnlyRestsNormally) {
   expect_invariants(book, 1U);
 }
 
+TEST(OrderBookSelfTradePreventionTest, CancelTakerRejectsSameTraderBeforeMatching) {
+  OrderBook book{PriceDomain{Price{100}, 5U}, 4U, Quantity{10U},
+                 SelfTradePolicy::cancel_taker};
+  std::array<Trade, 4U> trades{};
+  ASSERT_EQ(book.submit_limit(OrderId{1U}, TraderId{7U}, Side::sell, Price{102}, Quantity{4U},
+                              trades)
+                .reject_reason,
+            RejectReason::none);
+
+  const SubmitResult blocked =
+      book.submit_limit(OrderId{2U}, TraderId{7U}, Side::buy, Price{102}, Quantity{3U}, trades);
+
+  EXPECT_EQ(blocked.reject_reason, RejectReason::self_trade_prevented);
+  EXPECT_EQ(blocked.executed_quantity, Quantity{0U});
+  EXPECT_EQ(blocked.unfilled_quantity, Quantity{3U});
+  EXPECT_EQ(blocked.trade_count, 0U);
+  EXPECT_EQ(book.level_info(Side::sell, Price{102}), (LevelInfo{Quantity{4U}, 1U}));
+  EXPECT_EQ(book.check_invariants().violation, InvariantViolation::none);
+}
+
+TEST(OrderBookSelfTradePreventionTest, CancelTakerAllowsDifferentTraderMatch) {
+  OrderBook book{PriceDomain{Price{100}, 5U}, 4U, Quantity{10U},
+                 SelfTradePolicy::cancel_taker};
+  std::array<Trade, 4U> trades{};
+  ASSERT_EQ(book.submit_limit(OrderId{1U}, TraderId{7U}, Side::sell, Price{102}, Quantity{4U},
+                              trades)
+                .reject_reason,
+            RejectReason::none);
+
+  const SubmitResult matched =
+      book.submit_limit(OrderId{2U}, TraderId{8U}, Side::buy, Price{102}, Quantity{3U}, trades);
+
+  EXPECT_EQ(matched.reject_reason, RejectReason::none);
+  EXPECT_EQ(matched.executed_quantity, Quantity{3U});
+  ASSERT_EQ(matched.trade_count, 1U);
+  EXPECT_EQ(trades[0], (Trade{OrderId{2U}, OrderId{1U}, Price{102}, Quantity{3U}}));
+}
+
 TEST_F(OrderBookTest, FokInsufficientAcrossLevelsLeavesBookAndTradesUnchanged) {
   const SubmitResult first = limit(10, Side::sell, 103, 2);
   const SubmitResult second = limit(11, Side::sell, 105, 3);

@@ -50,6 +50,7 @@ private:
 
 class TraderId {
 public:
+  constexpr TraderId() noexcept = default;
   explicit constexpr TraderId(std::uint64_t value) noexcept : value_{value} {}
 
   [[nodiscard]] constexpr std::uint64_t value() const noexcept {

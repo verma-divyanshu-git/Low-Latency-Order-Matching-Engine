@@ -59,13 +59,16 @@ constexpr Handle kInvalidHandle{.index = kInvalidIndex, .generation = 0U};
 
 } // namespace
 
-OrderBook::OrderBook(PriceDomain domain, std::size_t max_orders, Quantity max_order_quantity)
+OrderBook::OrderBook(PriceDomain domain, std::size_t max_orders, Quantity max_order_quantity,
+                     SelfTradePolicy self_trade_policy)
     : domain_{checked_domain(domain)},
       max_order_quantity_{checked_max_quantity(max_order_quantity)},
       bids_{std::make_unique<PriceLevel[]>(domain_.tick_count())},
       asks_{std::make_unique<PriceLevel[]>(domain_.tick_count())},
       bid_occupancy_{domain_.tick_count()}, ask_occupancy_{domain_.tick_count()},
       arena_{max_orders},
+      trader_ids_{arena_.capacity() == 0U ? nullptr : std::make_unique<TraderId[]>(arena_.capacity())},
+      self_trade_policy_{self_trade_policy},
       visit_marks_{arena_.capacity() == 0U ? nullptr
                                            : std::make_unique<std::uint32_t[]>(arena_.capacity())} {
 }
@@ -159,11 +162,22 @@ RejectReason OrderBook::preflight_replace(Handle handle, Price new_price,
 
 SubmitResult OrderBook::submit_limit(OrderId id, Side side, Price price, Quantity quantity,
                                      std::span<Trade> trades) noexcept {
-  return submit_limit(id, side, price, quantity, TimeInForce::gtc, trades);
+  return submit_limit(id, TraderId{0U}, side, price, quantity, TimeInForce::gtc, trades);
+}
+
+SubmitResult OrderBook::submit_limit(OrderId id, TraderId trader_id, Side side, Price price,
+                                     Quantity quantity, std::span<Trade> trades) noexcept {
+  return submit_limit(id, trader_id, side, price, quantity, TimeInForce::gtc, trades);
 }
 
 SubmitResult OrderBook::submit_limit(OrderId id, Side side, Price price, Quantity quantity,
                                      TimeInForce time_in_force, std::span<Trade> trades) noexcept {
+  return submit_limit(id, TraderId{0U}, side, price, quantity, time_in_force, trades);
+}
+
+SubmitResult OrderBook::submit_limit(OrderId id, TraderId trader_id, Side side, Price price,
+                                     Quantity quantity, TimeInForce time_in_force,
+                                     std::span<Trade> trades) noexcept {
   if (!is_valid_time_in_force(time_in_force)) {
     return rejected(RejectReason::invalid_time_in_force, quantity);
   }
@@ -179,12 +193,16 @@ SubmitResult OrderBook::submit_limit(OrderId id, Side side, Price price, Quantit
     return rejected(preflight_result, quantity);
   }
   const std::uint32_t level_index = *domain_.index_of(price);
+  if (self_trade_policy_ == SelfTradePolicy::cancel_taker &&
+      would_self_trade(trader_id, side, level_index)) {
+    return rejected(RejectReason::self_trade_prevented, quantity);
+  }
 
   std::uint64_t remaining = quantity.value();
   std::uint32_t trade_count = 0U;
-  match(id, side, level_index, remaining, trades, trade_count);
+  match(id, trader_id, side, level_index, remaining, trades, trade_count);
   const bool should_rest = time_in_force == TimeInForce::gtc && remaining != 0U;
-  const Handle handle = should_rest ? rest(id, side, level_index, remaining) : kInvalidHandle;
+  const Handle handle = should_rest ? rest(id, trader_id, side, level_index, remaining) : kInvalidHandle;
   return {.reject_reason = RejectReason::none,
           .executed_quantity = Quantity{quantity.value() - remaining},
           .unfilled_quantity = Quantity{remaining},
@@ -201,7 +219,7 @@ SubmitResult OrderBook::submit_post_only(OrderId id, Side side, Price price, Qua
   if (preflight_result != RejectReason::none) {
     return rejected(preflight_result, quantity);
   }
-  return submit_limit(id, side, price, quantity, TimeInForce::gtc, trades);
+  return submit_limit(id, TraderId{0U}, side, price, quantity, TimeInForce::gtc, trades);
 }
 
 bool OrderBook::can_fully_fill(Side side, std::uint32_t limit_index,
@@ -245,7 +263,7 @@ SubmitResult OrderBook::submit_market(OrderId id, Side side, Quantity quantity,
 
   std::uint64_t remaining = quantity.value();
   std::uint32_t trade_count = 0U;
-  match(id, side, std::nullopt, remaining, trades, trade_count);
+  match(id, TraderId{0U}, side, std::nullopt, remaining, trades, trade_count);
   return {.reject_reason = RejectReason::none,
           .executed_quantity = Quantity{quantity.value() - remaining},
           .unfilled_quantity = Quantity{remaining},
@@ -258,7 +276,25 @@ bool OrderBook::has_crossing_order(Side side, std::uint32_t limit_index) const n
   return opposite_best.has_value() && crosses(side, *opposite_best, limit_index);
 }
 
-void OrderBook::match(OrderId taker_id, Side taker_side, std::optional<std::uint32_t> limit_index,
+bool OrderBook::would_self_trade(TraderId trader_id, Side side,
+                                 std::uint32_t limit_index) const noexcept {
+  const Side maker_side = opposite_side(side);
+  auto maker_level = best_index(maker_side);
+  while (maker_level.has_value() && crosses(side, *maker_level, limit_index)) {
+    std::uint32_t order_index = level(maker_side, *maker_level).head_index;
+    while (order_index != kInvalidIndex) {
+      if (trader_ids_[order_index] == trader_id) {
+        return true;
+      }
+      order_index = arena_.order_at(order_index).next_index;
+    }
+    maker_level = next_level(maker_side, *maker_level);
+  }
+  return false;
+}
+
+void OrderBook::match(OrderId taker_id, TraderId taker_trader_id, Side taker_side,
+                      std::optional<std::uint32_t> limit_index,
                       std::uint64_t& remaining, std::span<Trade> trades,
                       std::uint32_t& trade_count) noexcept {
   const Side maker_side = opposite_side(taker_side);
@@ -270,11 +306,13 @@ void OrderBook::match(OrderId taker_id, Side taker_side, std::optional<std::uint
     if (limit_index.has_value() && !crosses(taker_side, *maker_level, *limit_index)) {
       return;
     }
-    match_level(taker_id, taker_side, *maker_level, remaining, trades, trade_count);
+    match_level(taker_id, taker_trader_id, taker_side, *maker_level, remaining, trades,
+          trade_count);
   }
 }
 
-void OrderBook::match_level(OrderId taker_id, Side taker_side, std::uint32_t level_index,
+void OrderBook::match_level(OrderId taker_id, TraderId taker_trader_id, Side taker_side,
+                            std::uint32_t level_index,
                             std::uint64_t& remaining, std::span<Trade> trades,
                             std::uint32_t& trade_count) noexcept {
   const Side maker_side = opposite_side(taker_side);
@@ -285,6 +323,10 @@ void OrderBook::match_level(OrderId taker_id, Side taker_side, std::uint32_t lev
   }
   while (remaining != 0U && price_level.head_index != kInvalidIndex) {
     Order& maker = arena_.order_at(price_level.head_index);
+    if (self_trade_policy_ == SelfTradePolicy::cancel_taker &&
+        trader_ids_[price_level.head_index] == taker_trader_id) {
+      return;
+    }
     const std::uint64_t execution = std::min(remaining, maker.remaining.value());
     trades[trade_count++] =
         make_trade(taker_side, taker_id, maker.id, *execution_price, Quantity{execution});
@@ -381,7 +423,7 @@ SubmitResult OrderBook::replace(Handle handle, Price new_price, Quantity new_qua
   return submit_limit(id, side, new_price, new_quantity, TimeInForce::gtc, trades);
 }
 
-Handle OrderBook::rest(OrderId id, Side side, std::uint32_t level_index,
+Handle OrderBook::rest(OrderId id, TraderId trader_id, Side side, std::uint32_t level_index,
                        std::uint64_t remaining) noexcept {
   PriceLevel& price_level = level(side, level_index);
   const Order order{.id = id,
@@ -391,6 +433,7 @@ Handle OrderBook::rest(OrderId id, Side side, std::uint32_t level_index,
                     .encoded_level_side = detail::encode_level_side(level_index, side),
                     .reserved_flags = 0U};
   const AcquireResult acquired = arena_.acquire(order);
+  trader_ids_[acquired.handle.index] = trader_id;
   if (price_level.tail_index == kInvalidIndex) {
     price_level.head_index = acquired.handle.index;
     static_cast<void>(occupancy(side).set(level_index));
