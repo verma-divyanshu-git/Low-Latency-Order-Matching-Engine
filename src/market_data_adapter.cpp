@@ -37,6 +37,14 @@ MarketDataAdapter::adapt(const MarketDataMessage& message) noexcept {
     payload = CommandPayload::cancel(*handle);
     break;
   }
+  case MarketDataMessageType::replace_order: {
+    Handle* const handle = find_handle(message.order_id);
+    if (handle == nullptr) {
+      return std::unexpected{MarketDataAdaptError::unknown_order};
+    }
+    payload = CommandPayload::amend_quantity(*handle, message.quantity);
+    break;
+  }
   default:
     return std::unexpected{MarketDataAdaptError::unsupported_message};
   }
