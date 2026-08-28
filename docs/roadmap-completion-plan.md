@@ -45,6 +45,15 @@ Last updated: 2026-08-28.
 - PR #19 routes market-data add orders through gateway validation before sequence assignment.
 - Phase 2 is complete.
   Its lane, gateway, BBO, publication, runtime-control, threaded pipeline, and ADR requirements are implemented and covered.
+- PR #21 added gateway-backed market-data replay through the matcher.
+- PR #22 added generation-safe market-data delete mapping and replay lifecycle recording.
+- PR #23 added generation-safe market-data replace mapping.
+- PR #24 added canonical MBO event publication.
+- PR #25 added public protocol decoder fuzz coverage.
+- PR #26 fixed CI so every registered fuzz target is built before smoke testing.
+- PR #29 added canonical MBP publication from authoritative post-event order-book state.
+- Phase 3 is complete.
+  Its replay, mutation mapping, MBO/MBP publication, decoder fuzzing, protocol documentation, dataset policy, and ADR requirements are implemented and covered.
 
 ### Gates still open
 
@@ -79,8 +88,10 @@ Use one pull request per numbered concern.
 
 ### Phase 3: complete protocol ingestion and replay
 
-The command codec, fixed BBO and market-data codecs, file reader, add-order adapter, and the PR #9 protocol fix exist.
-The remaining work is:
+Completed on 2026-08-29.
+The listed requirements remain the acceptance record for the implementation and regression suite.
+
+The accepted work is:
 
 1. Route market-data replay through the gateway before matching.
 2. Support accepted mutation messages with sequencing, gap, malformed, range, enum, and reserved-byte rejection before engine mutation.
