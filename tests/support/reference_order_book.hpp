@@ -188,6 +188,8 @@ public:
               token};
     }
     location->order->remaining = new_remaining;
+    location->order->displayed_remaining =
+      std::min(location->order->displayed_remaining, new_remaining);
     return {AmendReason::none, location->order->id, previous, new_remaining, token};
   }
 
