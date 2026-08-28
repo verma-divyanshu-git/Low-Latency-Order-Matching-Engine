@@ -247,6 +247,10 @@ SubmitResult OrderBook::submit_iceberg(OrderId id, TraderId trader_id, Side side
   if (display_quantity.value() == 0U || display_quantity > quantity) {
     return rejected(RejectReason::invalid_display_quantity, quantity);
   }
+  const RejectReason basic = preflight(side, quantity);
+  if (basic != RejectReason::none) {
+    return rejected(basic, quantity);
+  }
   if (trades.size() < required_trade_capacity()) {
     return rejected(RejectReason::insufficient_trade_capacity, quantity);
   }

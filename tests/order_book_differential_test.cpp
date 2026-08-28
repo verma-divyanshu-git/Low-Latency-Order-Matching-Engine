@@ -134,5 +134,21 @@ TEST(OrderBookDifferentialTest, PostOnlyMatchesReferenceForCrossingAndRestingOrd
     EXPECT_EQ(production.check_invariants().violation, InvariantViolation::none);
   }
 
+  TEST(OrderBookDifferentialTest, IcebergValidatesQuantityBeforeTradeCapacity) {
+    OrderBook production{PriceDomain{Price{100}, 5U}, 8U, Quantity{16U}};
+    ReferenceOrderBook reference{Price{100}, 5U, 8U, Quantity{16U}};
+    std::array<Trade, 1U> production_trades{};
+
+    const SubmitResult production_result = production.submit_iceberg(
+        OrderId{1U}, Side::sell, Price{102}, Quantity{17U}, Quantity{10U}, production_trades);
+    const ModelSubmitResult reference_result = reference.submit_iceberg(
+        OrderId{1U}, TraderId{0U}, Side::sell, Price{102}, Quantity{17U}, Quantity{10U},
+        production_trades.size());
+
+    EXPECT_EQ(production_result.reject_reason, RejectReason::quantity_too_large);
+    EXPECT_EQ(production_result.reject_reason, reference_result.reject_reason);
+    EXPECT_EQ(production.check_invariants().violation, InvariantViolation::none);
+  }
+
 } // namespace
 } // namespace matching_engine::test
