@@ -1,4 +1,5 @@
 #include "support/differential_simulator.hpp"
+#include "support/reference_order_book.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -54,6 +55,42 @@ TEST(OrderBookDifferentialSyntheticStressTest, HighCancelWorkload) {
 
 TEST(OrderBookDifferentialSyntheticStressTest, VolatilityShockWorkload) {
   DifferentialSimulator{Scenario::volatility_shock()}.run(0x9e3779b97f4a7c15ULL, 1500U);
+}
+
+TEST(OrderBookDifferentialTest, PostOnlyMatchesReferenceForCrossingAndRestingOrders) {
+  OrderBook production{PriceDomain{Price{100}, 5U}, 4U, Quantity{10U}};
+  ReferenceOrderBook reference{Price{100}, 5U, 4U, Quantity{10U}};
+  std::array<Trade, 4U> production_trades{};
+
+  ASSERT_EQ(production.submit_limit(OrderId{1U}, Side::sell, Price{102}, Quantity{4U},
+                  production_trades)
+        .reject_reason,
+      RejectReason::none);
+  ASSERT_EQ(reference.submit_limit(OrderId{1U}, Side::sell, Price{102}, Quantity{4U},
+                   TimeInForce::gtc, 4U)
+        .reject_reason,
+      RejectReason::none);
+
+  const SubmitResult production_crossing =
+    production.submit_post_only(OrderId{2U}, Side::buy, Price{102}, Quantity{3U}, production_trades);
+  const ModelSubmitResult reference_crossing =
+    reference.submit_post_only(OrderId{2U}, Side::buy, Price{102}, Quantity{3U}, 4U);
+  EXPECT_EQ(production_crossing.reject_reason, reference_crossing.reject_reason);
+  EXPECT_EQ(production_crossing.executed_quantity, reference_crossing.executed_quantity);
+  EXPECT_EQ(production_crossing.unfilled_quantity, reference_crossing.unfilled_quantity);
+  EXPECT_EQ(production_crossing.trade_count, reference_crossing.trades.size());
+
+  const SubmitResult production_resting =
+    production.submit_post_only(OrderId{3U}, Side::buy, Price{101}, Quantity{3U}, production_trades);
+  const ModelSubmitResult reference_resting =
+    reference.submit_post_only(OrderId{3U}, Side::buy, Price{101}, Quantity{3U}, 4U);
+  EXPECT_EQ(production_resting.reject_reason, reference_resting.reject_reason);
+  EXPECT_EQ(production_resting.executed_quantity, reference_resting.executed_quantity);
+  EXPECT_EQ(production_resting.unfilled_quantity, reference_resting.unfilled_quantity);
+  EXPECT_EQ(production_resting.trade_count, reference_resting.trades.size());
+  EXPECT_EQ(production.level_info(Side::buy, Price{101}), reference.level_info(Side::buy, Price{101}));
+  EXPECT_EQ(production.level_info(Side::sell, Price{102}), reference.level_info(Side::sell, Price{102}));
+  EXPECT_EQ(production.check_invariants().violation, InvariantViolation::none);
 }
 
 } // namespace
