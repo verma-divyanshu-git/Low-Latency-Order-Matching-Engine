@@ -156,7 +156,7 @@ jobs:
         # standard where `concept`/`requires` are not keywords and cannot parse
         # those headers, so build only the fuzz target. It is pure C++23 engine
         # code and is all the smoke test needs.
-        run: cmake --build --preset fuzz --target order_book_fuzz
+        run: cmake --build --preset fuzz --target order_book_fuzz protocol_decoder_fuzz
 
       - name: Run 10,000-execution smoke
         run: ctest --preset fuzz -L fuzz
