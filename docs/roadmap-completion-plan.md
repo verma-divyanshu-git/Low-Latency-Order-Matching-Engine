@@ -27,16 +27,17 @@ Last updated: 2026-08-28.
 - The hooks reject identities outside the approved personal identity.
 - PR #9 merged into `main` as `6b109fd`.
 - PR #9 corrects market-data encoder error classification and adds focused regression coverage.
+- Every PR #9 GitHub Actions check passed: Ubuntu x86_64, macOS arm64, ASan, UBSan, TSan, throughput regression, and Clang fuzz smoke.
 - The focused `MarketDataProtocolTest` suite passed four of four tests after the PR branch was rebased.
+- The local debug CTest catalog passed, including threaded pipeline, replay, and SPSC allocation checks.
+- `tests/spsc_queue_test.cpp` contains the required `<thread>` include.
 - Merged local feature branches were deleted.
+- The obsolete `chore/stabilize-ci-and-identity` branch was reconciled and deleted.
+  Its gateway implementation and build registrations were already in `main`, while its CI and CMake state was outdated.
 
 ### Gates still open
 
-- Confirm the final state of every PR #9 GitHub Actions job before calling the CI gate complete.
-- Reconcile and then delete `chore/stabilize-ci-and-identity`.
-  Its gateway implementation is already present in `main`, but its old CI and CMake snapshots were not treated as equivalent automatically.
-- Run and record the remaining fresh local preset matrix required by Phase 1: debug, release, ASan, UBSan, TSan, fuzz, and measurement.
-- Re-verify the `<thread>` include in `tests/spsc_queue_test.cpp` while completing the Phase 1 matrix.
+- Run and record the remaining fresh local preset matrix required by Phase 1: release, ASan, UBSan, TSan, fuzz, and measurement.
 - Keep this document and `plan-update-as-u-go-what-done-what-not.md` synchronized after each merged PR.
 
 ## Verified baseline on main
