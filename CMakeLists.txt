@@ -237,16 +237,24 @@ if(ENGINE_ENABLE_FUZZING)
   target_link_libraries(order_book_fuzz PRIVATE matching_engine::core)
   engine_configure_fuzz_target(order_book_fuzz)
 
+  add_executable(protocol_decoder_fuzz tests/fuzz/protocol_decoder_fuzz.cpp)
+  target_link_libraries(protocol_decoder_fuzz PRIVATE matching_engine::persistence)
+  engine_configure_fuzz_target(protocol_decoder_fuzz)
+
   if(BUILD_TESTING)
     add_test(
       NAME order_book_fuzz_smoke
       COMMAND order_book_fuzz -runs=10000 -max_len=448 -timeout=10)
     set_tests_properties(order_book_fuzz_smoke PROPERTIES LABELS fuzz TIMEOUT 120)
+    add_test(
+      NAME protocol_decoder_fuzz_smoke
+      COMMAND protocol_decoder_fuzz -runs=10000 -max_len=65 -timeout=10)
+    set_tests_properties(protocol_decoder_fuzz_smoke PROPERTIES LABELS fuzz TIMEOUT 120)
     get_filename_component(ENGINE_FUZZ_COMPILER_DIRECTORY "${CMAKE_CXX_COMPILER}" DIRECTORY)
     set(ENGINE_FUZZ_SYMBOLIZER "${ENGINE_FUZZ_COMPILER_DIRECTORY}/llvm-symbolizer")
     if(EXISTS "${ENGINE_FUZZ_SYMBOLIZER}")
       set_tests_properties(
-        order_book_fuzz_smoke
+        order_book_fuzz_smoke protocol_decoder_fuzz_smoke
         PROPERTIES ENVIRONMENT "ASAN_SYMBOLIZER_PATH=${ENGINE_FUZZ_SYMBOLIZER}")
     endif()
   endif()
