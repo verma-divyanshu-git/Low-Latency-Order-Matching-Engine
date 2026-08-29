@@ -32,8 +32,18 @@ All campaign artifacts are explicitly `regression_only`.
 The live Darwin arm64 [host report](benchmark-results/phase7-host/mac-arm64.json) is `qualified: false`, and every measured operation is below the harness resolution threshold.
 No latency number from the Mac or CI is published or suitable for a resume.
 
-The [artifact manifest](benchmark-results/phase7-comparison/manifest.json) links the source revision, compiler, platform, comparison files, full-engine sweeps, and host report.
-Reproduction commands are recorded in the [campaign document](docs/optimization-campaign.md).
+| Signal | Measured result | Scope |
+|---|---:|---|
+| Batch matching throughput | **75.3-77.2 million ops/s** | Range of two independent median-of-21 runs, 1,000,000 crossing-limit operations per repetition, dedicated Apple M4 Pro |
+| Full-engine offered rate | **2.0 million events/s tracked** | 100,000 measured events in each scenario, zero invalid samples; tested load, not a saturation ceiling |
+| Operation latency | **Not published** | Darwin arm64 host is unqualified and operations are below measurement resolution |
+
+The [fallback manifest](benchmark-results/phase8-fallback/manifest.json) links the exact source revision, compiler, hardware, raw runs, sweep CSVs, checksums, hashes, and claim restrictions.
+The [fallback methodology](docs/fallback-performance.md) provides reproduction commands and interpretation limits.
+The earlier [optimization manifest](benchmark-results/phase7-comparison/manifest.json) links the equivalent data-structure comparison and host evidence.
+
+These numbers are measured on the stated machine.
+The project does not estimate or multiply them into hypothetical x86 bare-metal results.
 
 ## Design alternatives
 

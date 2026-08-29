@@ -23,7 +23,7 @@
   <text x="245" y="85" class="small">debug, sanitizer, differential, replay</text>
   <rect x="40" y="117" width="880" height="48" rx="6" class="durable" />
   <text x="62" y="145" class="label">Throughput</text>
-  <text x="245" y="145" class="small">same-host regression artifacts retained</text>
+  <text x="245" y="145" class="small">75.3-77.2M ops/s · batch median · M4 Pro</text>
   <rect x="40" y="177" width="880" height="48" rx="6" class="warning" />
   <text x="62" y="205" class="label">Latency</text>
   <text x="245" y="205" class="small">not publishable: host unqualified + below resolution</text>

@@ -52,6 +52,16 @@ def static_checks(root: pathlib.Path) -> list[str]:
     host = json.loads((root / "benchmark-results" / "phase7-host" / "mac-arm64.json").read_text())
     if host.get("evidence_mode") != "live_host" or host.get("qualified") is not False:
         errors.append("host report is not live nonqualified evidence")
+    fallback = json.loads(
+        (root / "benchmark-results" / "phase8-fallback" / "manifest.json").read_text()
+    )
+    if fallback.get("claim_scope") != "regression_only":
+        errors.append("fallback manifest is not regression_only")
+    if fallback.get("host_qualified") is not False or fallback.get("latency_publishable") is not False:
+        errors.append("fallback manifest does not refuse latency publication")
+    medians = fallback.get("batch", {}).get("median_operations_per_second", [])
+    if len(medians) != 2 or min(medians) < 75_000_000 or max(medians) > 78_000_000:
+        errors.append("fallback batch median range is unexpected")
     for levels in (64, 4096, 65536):
         data = json.loads((comparison / f"levels-{levels}.json").read_text())
         if data.get("claim_scope") != "regression_only" or not data.get("validation_passed"):
@@ -71,6 +81,8 @@ def static_checks(root: pathlib.Path) -> list[str]:
         "docs/assets/architecture.svg",
         "docs/assets/evidence-status.svg",
         "benchmark-results/phase7-comparison/manifest.json",
+        "benchmark-results/phase8-fallback/manifest.json",
+        "75.3-77.2 million ops/s",
         "No latency number from the Mac or CI is published",
     )
     for text in required:
@@ -167,6 +179,9 @@ def artifact_hashes(root: pathlib.Path) -> dict[str, str]:
     candidates = [
         root / "benchmark-results" / "phase7-comparison" / "manifest.json",
         root / "benchmark-results" / "phase7-host" / "mac-arm64.json",
+        root / "benchmark-results" / "phase8-fallback" / "manifest.json",
+        root / "benchmark-results" / "phase8-fallback" / "m4-pro-batch-throughput.json",
+        root / "benchmark-results" / "phase8-fallback" / "m4-pro-batch-throughput-repeat.json",
     ]
     candidates.extend(sorted((root / "build" / "release").glob("matching-engine-*.tar.gz")))
     return {str(path.relative_to(root)): sha256(path) for path in candidates if path.is_file()}

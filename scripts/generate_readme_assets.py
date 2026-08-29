@@ -97,7 +97,7 @@ def evidence_svg() -> ET.Element:
     text(root, 40, 45, "EVIDENCE STATUS", "title")
     rows = [
         (85, "Correctness", "debug, sanitizer, differential, replay", "durable"),
-        (145, "Throughput", "same-host regression artifacts retained", "durable"),
+        (145, "Throughput", "75.3-77.2M ops/s · batch median · M4 Pro", "durable"),
         (205, "Latency", "not publishable: host unqualified + below resolution", "warning"),
     ]
     for y, heading, detail, css_class in rows:

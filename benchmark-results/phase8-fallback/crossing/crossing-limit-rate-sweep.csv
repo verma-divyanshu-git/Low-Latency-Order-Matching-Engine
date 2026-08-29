@@ -1,0 +1,6 @@
+requested_rate,achieved_completion_rate,count,valid_samples,invalid_samples,executed_operations,p50_ns,p99_ns,p99_9_ns,max_backlog,max_lateness_ns,claim_scope,operation_resolution_reason,effective_granularity_ns
+100000,100000.02090021336,100000,100000,0,100000,41,5419,67839,58,582666,regression_only,operation_below_resolution,41
+250000,250000.1306263745,100000,100000,0,100000,42,2501,16959,15,61625,regression_only,operation_below_resolution,41
+500000,500000.41750452365,100000,100000,0,100000,42,2459,18015,37,74542,regression_only,operation_below_resolution,41
+1000000,1000000.830008989,100000,100000,0,100000,41,2083,14295,33,33958,regression_only,operation_below_resolution,41
+2000000,2000018.3603521516,100000,100000,0,100000,41,5627,26847,89,44708,regression_only,operation_below_resolution,41
