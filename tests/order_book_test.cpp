@@ -125,6 +125,109 @@ TEST(OrderBookConstructionTest, EnforcesExplicitPriceLevelMemoryCeiling) {
                std::length_error);
 }
 
+TEST(OrderBookAllocationTest, ThresholdProRataUsesDisplayedQuantityAndFifoResidue) {
+  OrderBook book{PriceDomain{Price{100}, 3U}, 8U, Quantity{100U}, SelfTradePolicy::none,
+         AllocationMode::threshold_pro_rata, Quantity{2U}};
+  std::array<Trade, 8U> trades{};
+
+  ASSERT_EQ(book.submit_iceberg(OrderId{1U}, Side::sell, Price{101}, Quantity{100U}, Quantity{5U},
+                trades)
+        .reject_reason,
+      RejectReason::none);
+  ASSERT_EQ(book.submit_limit(OrderId{2U}, Side::sell, Price{101}, Quantity{20U}, trades)
+        .reject_reason,
+      RejectReason::none);
+  ASSERT_EQ(book.submit_limit(OrderId{3U}, Side::sell, Price{101}, Quantity{8U}, trades)
+        .reject_reason,
+      RejectReason::none);
+  ASSERT_EQ(book.submit_limit(OrderId{4U}, Side::sell, Price{101}, Quantity{2U}, trades)
+        .reject_reason,
+      RejectReason::none);
+
+  const SubmitResult result =
+    book.submit_market(OrderId{5U}, Side::buy, Quantity{20U}, trades);
+
+  ASSERT_EQ(result.trade_count, 3U);
+  EXPECT_EQ(trades[0], (Trade{OrderId{5U}, OrderId{1U}, Price{101}, Quantity{5U}}));
+  EXPECT_EQ(trades[1], (Trade{OrderId{5U}, OrderId{2U}, Price{101}, Quantity{11U}}));
+  EXPECT_EQ(trades[2], (Trade{OrderId{5U}, OrderId{3U}, Price{101}, Quantity{4U}}));
+  EXPECT_EQ(result.executed_quantity, Quantity{20U});
+  EXPECT_EQ(result.unfilled_quantity, Quantity{0U});
+  EXPECT_EQ(book.level_info(Side::sell, Price{101}),
+      (LevelInfo{Quantity{110U}, 4U}));
+  EXPECT_EQ(book.check_invariants().violation, InvariantViolation::none);
+}
+
+TEST(OrderBookAllocationTest, ThresholdAndResidueAreDeterministicAndConserveQuantity) {
+  OrderBook book{PriceDomain{Price{100}, 3U}, 4U, Quantity{100U}, SelfTradePolicy::none,
+                 AllocationMode::threshold_pro_rata, Quantity{3U}};
+  std::array<Trade, 4U> trades{};
+  ASSERT_EQ(book.submit_limit(OrderId{1U}, Side::sell, Price{101}, Quantity{5U}, trades)
+                .reject_reason,
+            RejectReason::none);
+  ASSERT_EQ(book.submit_limit(OrderId{2U}, Side::sell, Price{101}, Quantity{20U}, trades)
+                .reject_reason,
+            RejectReason::none);
+  ASSERT_EQ(book.submit_limit(OrderId{3U}, Side::sell, Price{101}, Quantity{8U}, trades)
+                .reject_reason,
+            RejectReason::none);
+
+  const SubmitResult result = book.submit_market(OrderId{4U}, Side::buy, Quantity{20U}, trades);
+
+  ASSERT_EQ(result.trade_count, 3U);
+  EXPECT_EQ(trades[0].quantity, Quantity{4U});
+  EXPECT_EQ(trades[1].quantity, Quantity{12U});
+  EXPECT_EQ(trades[2].quantity, Quantity{4U});
+  EXPECT_EQ(result.executed_quantity.value() + result.unfilled_quantity.value(), 20U);
+  EXPECT_EQ(book.level_info(Side::sell, Price{101}), (LevelInfo{Quantity{13U}, 3U}));
+}
+
+TEST(OrderBookAllocationTest, WideMultiplicationCannotOverflow) {
+  constexpr std::uint64_t maximum = std::numeric_limits<std::uint32_t>::max();
+  OrderBook book{PriceDomain{Price{100}, 3U}, 2U, Quantity{maximum}, SelfTradePolicy::none,
+                 AllocationMode::threshold_pro_rata, Quantity{1U}};
+  std::array<Trade, 2U> trades{};
+  ASSERT_EQ(book.submit_limit(OrderId{1U}, Side::sell, Price{101}, Quantity{maximum}, trades)
+                .reject_reason,
+            RejectReason::none);
+  ASSERT_EQ(book.submit_limit(OrderId{2U}, Side::sell, Price{101}, Quantity{maximum}, trades)
+                .reject_reason,
+            RejectReason::none);
+
+  const SubmitResult result =
+      book.submit_market(OrderId{3U}, Side::buy, Quantity{maximum}, trades);
+
+  ASSERT_EQ(result.trade_count, 2U);
+  EXPECT_EQ(trades[0].quantity, Quantity{(maximum / 2U) + 1U});
+  EXPECT_EQ(trades[1].quantity, Quantity{maximum / 2U});
+  EXPECT_EQ(result.executed_quantity, Quantity{maximum});
+  EXPECT_EQ(book.check_invariants().violation, InvariantViolation::none);
+}
+
+TEST(OrderBookAllocationTest, CancelTakerAndTriggeredStopsKeepExistingSemantics) {
+  OrderBook book{PriceDomain{Price{90}, 21U}, 5U, Quantity{20U},
+                 SelfTradePolicy::cancel_taker, AllocationMode::threshold_pro_rata,
+                 Quantity{2U}};
+  std::array<Trade, 5U> trades{};
+  ASSERT_EQ(book.submit_limit(OrderId{1U}, TraderId{7U}, Side::sell, Price{100}, Quantity{8U},
+                              trades)
+                .reject_reason,
+            RejectReason::none);
+  EXPECT_EQ(book.submit_limit(OrderId{2U}, TraderId{7U}, Side::buy, Price{100}, Quantity{3U},
+                              trades)
+                .reject_reason,
+            RejectReason::self_trade_prevented);
+  ASSERT_EQ(book.submit_stop(OrderId{3U}, Side::sell, Price{100}, Quantity{4U}, trades)
+                .reject_reason,
+            RejectReason::none);
+  ASSERT_EQ(book.submit_limit(OrderId{4U}, TraderId{9U}, Side::buy, Price{100}, Quantity{2U}, trades)
+                .reject_reason,
+            RejectReason::none);
+  EXPECT_EQ(book.stop_activations().size(), 1U);
+  EXPECT_EQ(book.stop_activations()[0].order_id, OrderId{3U});
+  EXPECT_EQ(book.check_invariants().violation, InvariantViolation::none);
+}
+
 TEST_F(OrderBookTest, PassiveOrdersRestAndPublishBboAndLevelAggregates) {
   const SubmitResult bid = limit(1, Side::buy, 103, 7);
   const SubmitResult second_bid = limit(2, Side::buy, 103, 5);

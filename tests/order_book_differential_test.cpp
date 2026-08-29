@@ -50,6 +50,15 @@ TEST(OrderBookDifferentialTest, NormalSeedRegressionCorpusCoversTenThousandOpera
   }
 }
 
+TEST(OrderBookDifferentialTest, ThresholdProRataMatchesIndependentReferenceModel) {
+  constexpr std::array<std::uint64_t, 3> seeds{
+      0x6a09e667f3bcc909ULL, 0xbb67ae8584caa73bULL, 0x3c6ef372fe94f82bULL};
+  for (const std::uint64_t seed : seeds) {
+    DifferentialSimulator{Scenario::normal(), AllocationMode::threshold_pro_rata, Quantity{2U}}
+        .run(seed, 1000U);
+  }
+}
+
 TEST(OrderBookDifferentialSyntheticStressTest, HighCancelWorkload) {
   DifferentialSimulator{Scenario::high_cancel()}.run(0xfeedfacecafebeefULL, 1500U);
 }

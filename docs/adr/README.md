@@ -28,3 +28,4 @@ A new record supersedes a decision when the architecture changes.
 - [ADR-0019: Canonical MBO and MBP publication](0019-canonical-mbo-and-mbp-publication.md)
 - [ADR-0020: Iceberg replenishment](0020-iceberg-replenishment.md)
 - [ADR-0021: Stop-order trigger cascades](0021-stop-order-trigger-cascades.md)
+- [ADR-0022: Threshold pro-rata with FIFO residue](0022-threshold-pro-rata-with-fifo-residue.md)

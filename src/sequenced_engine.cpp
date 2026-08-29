@@ -36,8 +36,10 @@ namespace {
 SequencedEngine::SequencedEngine(PriceDomain domain, std::size_t max_orders,
                                  Quantity max_order_quantity, Sequence next_sequence,
                  std::uint64_t last_logical_time,
-                 SelfTradePolicy self_trade_policy)
-  : order_book_{domain, max_orders, max_order_quantity, self_trade_policy},
+                 SelfTradePolicy self_trade_policy, AllocationMode allocation_mode,
+                 Quantity pro_rata_minimum)
+  : order_book_{domain, max_orders, max_order_quantity, self_trade_policy, allocation_mode,
+                pro_rata_minimum},
       trade_scratch_{max_orders == 0U ? nullptr : std::make_unique<Trade[]>(max_orders)},
       trade_capacity_{max_orders}, next_sequence_{next_sequence.value()},
       last_logical_time_{last_logical_time} {

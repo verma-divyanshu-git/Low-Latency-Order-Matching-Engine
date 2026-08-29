@@ -60,7 +60,8 @@ constexpr Handle kInvalidHandle{.index = kInvalidIndex, .generation = 0U};
 } // namespace
 
 OrderBook::OrderBook(PriceDomain domain, std::size_t max_orders, Quantity max_order_quantity,
-                     SelfTradePolicy self_trade_policy)
+                     SelfTradePolicy self_trade_policy, AllocationMode allocation_mode,
+                     Quantity pro_rata_minimum)
     : domain_{checked_domain(domain)},
       max_order_quantity_{checked_max_quantity(max_order_quantity)},
       bids_{std::make_unique<PriceLevel[]>(domain_.tick_count())},
@@ -90,6 +91,9 @@ OrderBook::OrderBook(PriceDomain domain, std::size_t max_orders, Quantity max_or
                             ? nullptr
                             : std::make_unique<StopActivation[]>(arena_.capacity())},
       self_trade_policy_{self_trade_policy},
+      allocation_mode_{allocation_mode},
+      pro_rata_minimum_{checked_pro_rata_minimum(allocation_mode, pro_rata_minimum,
+                     max_order_quantity_)},
       trade_report_indices_{arena_.capacity() == 0U
                 ? nullptr
                 : std::make_unique<std::uint32_t[]>(arena_.capacity())},
@@ -113,6 +117,19 @@ std::uint32_t OrderBook::checked_max_quantity(Quantity quantity) {
     throw std::invalid_argument{"OrderBook maximum order quantity must fit uint32 and be positive"};
   }
   return static_cast<std::uint32_t>(quantity.value());
+}
+
+std::uint32_t OrderBook::checked_pro_rata_minimum(AllocationMode allocation_mode,
+                                                  Quantity minimum,
+                                                  std::uint32_t maximum) {
+  if (allocation_mode == AllocationMode::fifo) {
+    return 0U;
+  }
+  if (allocation_mode != AllocationMode::threshold_pro_rata || minimum.value() == 0U ||
+      minimum.value() > maximum) {
+    throw std::invalid_argument{"invalid threshold pro-rata configuration"};
+  }
+  return static_cast<std::uint32_t>(minimum.value());
 }
 
 RejectReason OrderBook::preflight(Side side, Quantity quantity) const noexcept {
@@ -570,21 +587,83 @@ void OrderBook::match_level(OrderId taker_id, TraderId taker_trader_id, Side tak
                             std::uint32_t level_index,
                             std::uint64_t& remaining, std::span<Trade> trades,
                             std::uint32_t& trade_count) noexcept {
-  const Side maker_side = opposite_side(taker_side);
-  PriceLevel& price_level = level(maker_side, level_index);
-  const auto execution_price = domain_.price_at(level_index);
-  if (!execution_price.has_value()) {
+  if (allocation_mode_ == AllocationMode::threshold_pro_rata) {
+    match_level_threshold_pro_rata(taker_id, taker_trader_id, taker_side, level_index, remaining,
+                                   trades, trade_count);
     return;
   }
+  match_level_fifo(taker_id, taker_trader_id, taker_side, level_index, remaining, trades,
+                   trade_count);
+}
+
+void OrderBook::match_level_fifo(OrderId taker_id, TraderId taker_trader_id, Side taker_side,
+                                 std::uint32_t level_index, std::uint64_t& remaining,
+                                 std::span<Trade> trades,
+                                 std::uint32_t& trade_count) noexcept {
+  const Side maker_side = opposite_side(taker_side);
+  PriceLevel& price_level = level(maker_side, level_index);
   while (remaining != 0U && price_level.head_index != kInvalidIndex) {
     const std::uint32_t maker_index = price_level.head_index;
-    Order& maker = arena_.order_at(maker_index);
     if (self_trade_policy_ == SelfTradePolicy::cancel_taker &&
         trader_ids_[maker_index] == taker_trader_id) {
       return;
     }
     const std::uint64_t execution =
         std::min(remaining, displayed_remaining_[maker_index]);
+    execute_match(taker_id, taker_side, level_index, maker_index, execution, remaining, trades,
+                  trade_count);
+  }
+}
+
+void OrderBook::match_level_threshold_pro_rata(
+    OrderId taker_id, TraderId taker_trader_id, Side taker_side, std::uint32_t level_index,
+    std::uint64_t& remaining, std::span<Trade> trades, std::uint32_t& trade_count) noexcept {
+  const Side maker_side = opposite_side(taker_side);
+  const PriceLevel& price_level = level(maker_side, level_index);
+  std::uint64_t total_displayed = 0U;
+  std::uint32_t end_index = kInvalidIndex;
+  for (std::uint32_t index = price_level.head_index; index != kInvalidIndex;
+       index = arena_.order_at(index).next_index) {
+    if (self_trade_policy_ == SelfTradePolicy::cancel_taker &&
+        trader_ids_[index] == taker_trader_id) {
+      end_index = index;
+      break;
+    }
+    total_displayed += displayed_remaining_[index];
+  }
+  if (total_displayed != 0U) {
+    const std::uint64_t pro_rata_quantity = remaining;
+    std::uint32_t index = price_level.head_index;
+    while (index != end_index && index != kInvalidIndex && remaining != 0U) {
+      const std::uint32_t next_index = arena_.order_at(index).next_index;
+      const std::uint64_t displayed = displayed_remaining_[index];
+      std::uint64_t execution = static_cast<std::uint64_t>(
+          (static_cast<unsigned __int128>(displayed) * pro_rata_quantity) / total_displayed);
+      execution = std::min(execution, displayed);
+      if (execution < pro_rata_minimum_) {
+        execution = 0U;
+      }
+      if (execution != 0U) {
+        execute_match(taker_id, taker_side, level_index, index, execution, remaining, trades,
+                      trade_count);
+      }
+      index = next_index;
+    }
+  }
+  match_level_fifo(taker_id, taker_trader_id, taker_side, level_index, remaining, trades,
+                   trade_count);
+}
+
+void OrderBook::execute_match(OrderId taker_id, Side taker_side, std::uint32_t level_index,
+                              std::uint32_t maker_index, std::uint64_t execution,
+                              std::uint64_t& remaining, std::span<Trade> trades,
+                              std::uint32_t& trade_count) noexcept {
+    PriceLevel& price_level = level(opposite_side(taker_side), level_index);
+    Order& maker = arena_.order_at(maker_index);
+    const auto execution_price = domain_.price_at(level_index);
+    if (!execution_price.has_value()) {
+      return;
+    }
     if (trade_report_epochs_[maker_index] == trade_report_epoch_) {
       Trade& report = trades[trade_report_indices_[maker_index]];
       report.quantity = Quantity{report.quantity.value() + execution};
@@ -608,7 +687,6 @@ void OrderBook::match_level(OrderId taker_id, TraderId taker_trader_id, Side tak
         move_to_tail(maker_index);
       }
     }
-  }
 }
 
 void OrderBook::move_to_tail(std::uint32_t order_index) noexcept {

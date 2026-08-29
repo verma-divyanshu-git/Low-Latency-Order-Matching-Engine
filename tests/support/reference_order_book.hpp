@@ -10,6 +10,7 @@
 #include <iterator>
 #include <map>
 #include <optional>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -51,11 +52,24 @@ struct ModelAmendResult {
 class ReferenceOrderBook {
 public:
   ReferenceOrderBook(Price minimum, std::uint32_t tick_count, std::size_t max_orders,
-                     Quantity max_order_quantity, SelfTradePolicy self_trade_policy = SelfTradePolicy::none)
+                     Quantity max_order_quantity,
+                     SelfTradePolicy self_trade_policy = SelfTradePolicy::none,
+                     AllocationMode allocation_mode = AllocationMode::fifo,
+                     Quantity pro_rata_minimum = Quantity{2U})
       : minimum_{minimum.ticks()},
         maximum_{minimum.ticks() + static_cast<std::int64_t>(tick_count - 1U)},
         max_orders_{max_orders}, max_order_quantity_{max_order_quantity.value()},
-        self_trade_policy_{self_trade_policy} {}
+        self_trade_policy_{self_trade_policy}, allocation_mode_{allocation_mode},
+        pro_rata_minimum_{allocation_mode == AllocationMode::fifo ? 0U
+                                                                  : pro_rata_minimum.value()} {
+    if ((allocation_mode != AllocationMode::fifo &&
+         allocation_mode != AllocationMode::threshold_pro_rata) ||
+        (allocation_mode == AllocationMode::threshold_pro_rata &&
+         (pro_rata_minimum.value() == 0U ||
+          pro_rata_minimum.value() > max_order_quantity_))) {
+      throw std::invalid_argument{"invalid threshold pro-rata configuration"};
+    }
+  }
 
   [[nodiscard]] ModelSubmitResult submit_limit(OrderId id, Side side, Price price,
                                                Quantity quantity, TimeInForce time_in_force,
@@ -571,20 +585,53 @@ private:
 
   void match_level(OrderId taker_id, Side taker_side, std::int64_t maker_price, Queue& makers,
                    std::uint64_t& remaining, ModelSubmitResult& result) {
+    if (allocation_mode_ == AllocationMode::threshold_pro_rata) {
+      std::uint64_t total_displayed = 0U;
+      for (const ModelOrder& maker : makers) {
+        total_displayed += maker.displayed_remaining.value();
+      }
+      const std::uint64_t pro_rata_quantity = remaining;
+      std::vector<std::pair<ModelToken, std::uint64_t>> allocations;
+      allocations.reserve(makers.size());
+      for (const ModelOrder& maker : makers) {
+        std::uint64_t execution =
+            (maker.displayed_remaining.value() * pro_rata_quantity) / total_displayed;
+        execution = std::min(execution, maker.displayed_remaining.value());
+        if (execution >= pro_rata_minimum_) {
+          allocations.emplace_back(maker.token, execution);
+        }
+      }
+      for (const auto [token, execution] : allocations) {
+        const auto maker = std::find_if(makers.begin(), makers.end(), [token](const ModelOrder& order) {
+          return order.token == token;
+        });
+        if (maker != makers.end()) {
+          execute_match(taker_id, taker_side, maker_price, makers, maker, execution, remaining,
+                        result);
+        }
+      }
+    }
     while (remaining != 0U && !makers.empty()) {
-      ModelOrder& maker = makers.front();
-      const std::uint64_t maker_before = maker.remaining.value();
-      const std::uint64_t execution = std::min(remaining, maker.displayed_remaining.value());
+      execute_match(taker_id, taker_side, maker_price, makers, makers.begin(),
+                    std::min(remaining, makers.front().displayed_remaining.value()), remaining,
+                    result);
+    }
+  }
+
+  void execute_match(OrderId taker_id, Side taker_side, std::int64_t maker_price, Queue& makers,
+                     Queue::iterator maker, std::uint64_t execution, std::uint64_t& remaining,
+                     ModelSubmitResult& result) {
+      const std::uint64_t maker_before = maker->remaining.value();
       const bool valid_maker =
-          maker.token != 0U && maker.side != taker_side && maker_before >= execution;
+          maker->token != 0U && maker->side != taker_side && maker_before >= execution;
       result.phantom_fills_valid = result.phantom_fills_valid && valid_maker;
       const Trade trade = taker_side == Side::buy
-              ? Trade{taker_id, maker.id, Price{maker_price}, Quantity{execution}}
-              : Trade{maker.id, taker_id, Price{maker_price}, Quantity{execution}};
-            last_execution_price_ = trade.price;
+              ? Trade{taker_id, maker->id, Price{maker_price}, Quantity{execution}}
+              : Trade{maker->id, taker_id, Price{maker_price}, Quantity{execution}};
+      last_execution_price_ = trade.price;
       const bool valid_ids = taker_side == Side::buy
-                                 ? trade.buy_id == taker_id && trade.sell_id == maker.id
-                                 : trade.sell_id == taker_id && trade.buy_id == maker.id;
+                                 ? trade.buy_id == taker_id && trade.sell_id == maker->id
+                                 : trade.sell_id == taker_id && trade.buy_id == maker->id;
       result.phantom_fills_valid = result.phantom_fills_valid && valid_ids;
       const auto existing = std::find_if(result.trades.begin(), result.trades.end(),
                                          [&](const Trade& candidate) {
@@ -599,20 +646,19 @@ private:
       }
       remaining -= execution;
       if (execution == maker_before) {
-        makers.pop_front();
+        makers.erase(maker);
         --live_order_count_;
       } else {
-        maker.remaining = Quantity{maker_before - execution};
-        maker.displayed_remaining = Quantity{maker.displayed_remaining.value() - execution};
-        if (maker.displayed_remaining.value() == 0U) {
-            ModelOrder replenished = maker;
-            replenished.displayed_remaining = Quantity{
+        maker->remaining = Quantity{maker_before - execution};
+        maker->displayed_remaining = Quantity{maker->displayed_remaining.value() - execution};
+        if (maker->displayed_remaining.value() == 0U) {
+          ModelOrder replenished = *maker;
+          replenished.displayed_remaining = Quantity{
               std::min(replenished.display_quantity.value(), replenished.remaining.value())};
-          makers.pop_front();
-            makers.push_back(replenished);
+          makers.erase(maker);
+          makers.push_back(replenished);
         }
       }
-    }
   }
 
   [[nodiscard]] ModelToken rest(OrderId id, TraderId trader_id, Side side, Price price,
@@ -656,6 +702,8 @@ private:
   std::size_t max_orders_;
   std::uint64_t max_order_quantity_;
   SelfTradePolicy self_trade_policy_;
+  AllocationMode allocation_mode_;
+  std::uint64_t pro_rata_minimum_;
   Levels bids_;
   Levels asks_;
   std::deque<DormantStop> stops_;

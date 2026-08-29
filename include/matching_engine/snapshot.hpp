@@ -13,8 +13,8 @@
 
 namespace matching_engine {
 
-inline constexpr std::uint32_t kSnapshotFormatVersion = 4U;
-inline constexpr std::size_t kSnapshotHeaderSize = 112U;
+inline constexpr std::uint32_t kSnapshotFormatVersion = 5U;
+inline constexpr std::size_t kSnapshotHeaderSize = 120U;
 inline constexpr std::size_t kSnapshotSlotSize = 96U;
 inline constexpr std::uint32_t kMaximumSnapshotSlots = 1'000'000U;
 inline constexpr std::size_t kMaximumSnapshotBytes =

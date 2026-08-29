@@ -54,6 +54,8 @@ Last updated: 2026-08-28.
 - PR #29 added canonical MBP publication from authoritative post-event order-book state.
 - Phase 3 is complete.
   Its replay, mutation mapping, MBO/MBP publication, decoder fuzzing, protocol documentation, dataset policy, and ADR requirements are implemented and covered.
+- Phase 4 threshold pro-rata with FIFO residue is implemented on `feat/threshold-pro-rata`.
+  Its production, reference-model, differential, snapshot v5, focused regression, and ADR coverage pass the full 250-test debug catalog and both fuzz smoke targets locally.
 
 ### Gates still open
 
@@ -114,6 +116,9 @@ Implement and differentially test each semantic in a separate pull request.
 4. Stop and stop-limit orders with a bounded trigger cascade.
 5. Threshold pro-rata with FIFO residue.
 6. Opening-cross auction behavior derived from a cited venue rule.
+
+Threshold pro-rata is awaiting PR integration.
+Opening-cross remains the final unimplemented Phase 4 semantic.
 
 Every transition needs invariant, replay, snapshot, fuzz, and differential coverage.
 Each semantic needs an ADR with a cited venue rule.

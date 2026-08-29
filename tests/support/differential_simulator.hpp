@@ -114,13 +114,19 @@ private:
 
 class DifferentialSimulator {
 public:
-  explicit DifferentialSimulator(Scenario scenario) : scenario_{scenario} {}
+  explicit DifferentialSimulator(Scenario scenario,
+                                 AllocationMode allocation_mode = AllocationMode::fifo,
+                                 Quantity pro_rata_minimum = Quantity{2U})
+      : scenario_{scenario}, allocation_mode_{allocation_mode},
+        pro_rata_minimum_{pro_rata_minimum} {}
 
   void run(std::uint64_t seed, std::uint32_t operation_count) {
     DeterministicRandom random{seed};
     OrderBook engine{PriceDomain{Price{kMinimumPrice}, kTickCount}, kCapacity,
-                     Quantity{kMaxQuantity}};
-    ReferenceOrderBook model{Price{kMinimumPrice}, kTickCount, kCapacity, Quantity{kMaxQuantity}};
+                     Quantity{kMaxQuantity}, SelfTradePolicy::none, allocation_mode_,
+                     pro_rata_minimum_};
+    ReferenceOrderBook model{Price{kMinimumPrice}, kTickCount, kCapacity, Quantity{kMaxQuantity},
+                             SelfTradePolicy::none, allocation_mode_, pro_rata_minimum_};
     std::vector<Trade> trade_buffer(kCapacity);
     std::vector<TrackedOrder> tracked;
     Ledger ledger;
@@ -440,6 +446,8 @@ private:
   }
 
   Scenario scenario_;
+  AllocationMode allocation_mode_;
+  Quantity pro_rata_minimum_;
 };
 
 } // namespace matching_engine::test

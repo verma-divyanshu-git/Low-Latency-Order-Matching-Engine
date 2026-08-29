@@ -66,7 +66,9 @@ class SequencedEngine {
 public:
   SequencedEngine(PriceDomain domain, std::size_t max_orders, Quantity max_order_quantity,
                   Sequence next_sequence = Sequence{1U}, std::uint64_t last_logical_time = 0U,
-                  SelfTradePolicy self_trade_policy = SelfTradePolicy::none);
+                  SelfTradePolicy self_trade_policy = SelfTradePolicy::none,
+                  AllocationMode allocation_mode = AllocationMode::fifo,
+                  Quantity pro_rata_minimum = Quantity{2U});
 
   SequencedEngine(const SequencedEngine&) = delete;
   SequencedEngine& operator=(const SequencedEngine&) = delete;
