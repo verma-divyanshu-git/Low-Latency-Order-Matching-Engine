@@ -69,7 +69,8 @@ CommandValidationError validate_command_payload(const CommandPayload& payload) n
   if (payload.tag != CommandType::submit_limit && payload.tag != CommandType::submit_market &&
       payload.tag != CommandType::cancel && payload.tag != CommandType::amend_quantity &&
       payload.tag != CommandType::replace && payload.tag != CommandType::submit_iceberg &&
-      payload.tag != CommandType::submit_stop && payload.tag != CommandType::submit_stop_limit) {
+      payload.tag != CommandType::submit_stop && payload.tag != CommandType::submit_stop_limit &&
+      payload.tag != CommandType::uncross_opening_auction) {
     return CommandValidationError::invalid_tag;
   }
   if (payload.reserved != 0U) {
@@ -112,6 +113,11 @@ CommandValidationError validate_command_payload(const CommandPayload& payload) n
   case CommandType::replace:
     return has_zero_common_unused(payload) ? CommandValidationError::none
                                            : CommandValidationError::noncanonical;
+  case CommandType::uncross_opening_auction:
+    return has_zero_common_unused(payload) && payload.price_ticks == 0 && payload.quantity == 0U &&
+                   is_zero_handle(payload)
+               ? CommandValidationError::none
+               : CommandValidationError::noncanonical;
   }
   return CommandValidationError::invalid_tag;
 }

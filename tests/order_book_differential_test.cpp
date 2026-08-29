@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 #include <limits>
 #include <optional>
+#include <tuple>
 
 namespace matching_engine::test {
 namespace {
@@ -57,6 +58,47 @@ TEST(OrderBookDifferentialTest, ThresholdProRataMatchesIndependentReferenceModel
     DifferentialSimulator{Scenario::normal(), AllocationMode::threshold_pro_rata, Quantity{2U}}
         .run(seed, 1000U);
   }
+}
+
+TEST(OrderBookDifferentialTest, OpeningCrossMatchesIndependentReferenceModel) {
+  OrderBook production{PriceDomain{Price{98}, 7U}, 8U, Quantity{100U}, SelfTradePolicy::none,
+                       AllocationMode::fifo, Quantity{2U}, TradingState::opening_auction};
+  ReferenceOrderBook reference{Price{98}, 7U, 8U, Quantity{100U}, SelfTradePolicy::none,
+                               AllocationMode::fifo, Quantity{2U},
+                               TradingState::opening_auction};
+  std::array<Trade, 8U> production_trades{};
+  const std::array orders{
+      std::tuple{OrderId{1U}, Side::buy, Price{103}, Quantity{6U}},
+      std::tuple{OrderId{2U}, Side::buy, Price{101}, Quantity{4U}},
+      std::tuple{OrderId{3U}, Side::sell, Price{99}, Quantity{5U}},
+      std::tuple{OrderId{4U}, Side::sell, Price{101}, Quantity{3U}},
+      std::tuple{OrderId{5U}, Side::sell, Price{104}, Quantity{7U}},
+  };
+  for (const auto& [id, side, price, quantity] : orders) {
+    const SubmitResult actual = production.submit_limit(id, side, price, quantity,
+                                                        production_trades);
+    const ModelSubmitResult expected = reference.submit_limit(
+        id, side, price, quantity, TimeInForce::gtc, production_trades.size());
+    EXPECT_EQ(actual.reject_reason, expected.reject_reason);
+    EXPECT_EQ(actual.executed_quantity, expected.executed_quantity);
+    EXPECT_EQ(actual.unfilled_quantity, expected.unfilled_quantity);
+  }
+
+  const AuctionResult actual = production.uncross_opening_auction(production_trades);
+  const ModelAuctionResult expected =
+      reference.uncross_opening_auction(production_trades.size());
+
+  EXPECT_EQ(actual, expected.result);
+  EXPECT_TRUE(std::equal(expected.trades.begin(), expected.trades.end(),
+                         production_trades.begin()));
+  EXPECT_EQ(production.best_bid(), reference.best_bid());
+  EXPECT_EQ(production.best_ask(), reference.best_ask());
+  EXPECT_EQ(production.level_info(Side::buy, Price{101}),
+            reference.level_info(Side::buy, Price{101}));
+  EXPECT_EQ(production.level_info(Side::sell, Price{104}),
+            reference.level_info(Side::sell, Price{104}));
+  EXPECT_EQ(production.last_execution_price(), reference.last_execution_price());
+  EXPECT_EQ(production.check_invariants().violation, InvariantViolation::none);
 }
 
 TEST(OrderBookDifferentialSyntheticStressTest, HighCancelWorkload) {

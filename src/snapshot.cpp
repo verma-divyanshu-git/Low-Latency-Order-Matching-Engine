@@ -248,6 +248,7 @@ public:
     write_u32(bytes, 108U, book.last_execution_price_.has_value() ? 1U : 0U);
         write_u32(bytes, 112U, static_cast<std::uint32_t>(book.allocation_mode_));
         write_u32(bytes, 116U, book.pro_rata_minimum_);
+        write_u32(bytes, 120U, static_cast<std::uint32_t>(book.trading_state_));
     for (std::uint32_t index = 0; index < book.arena_.capacity_; ++index) {
       const auto& slot = book.arena_.slots_[index];
       const std::size_t offset =
@@ -287,12 +288,13 @@ public:
       }
     }
     const std::uint32_t version = read_u32(bytes, 8U);
-    if (version != 1U && version != 2U && version != 3U && version != 4U &&
+    if (version != 1U && version != 2U && version != 3U && version != 4U && version != 5U &&
       version != kSnapshotFormatVersion) {
       return std::unexpected{SnapshotError::unsupported_version};
     }
-    const std::size_t header_size =
-        version == kSnapshotFormatVersion ? kSnapshotHeaderSize : kLegacySnapshotHeaderSize;
+    const std::size_t header_size = version == kSnapshotFormatVersion
+                      ? kSnapshotHeaderSize
+                      : (version == 5U ? 120U : kLegacySnapshotHeaderSize);
     if (bytes.size() < header_size) {
       return std::unexpected{SnapshotError::invalid_length};
     }
@@ -301,6 +303,7 @@ public:
     const std::uint32_t self_trade_policy = read_u32(bytes, 20U);
     const std::uint32_t allocation_mode = version < 5U ? 0U : read_u32(bytes, 112U);
     const std::uint32_t pro_rata_minimum = version < 5U ? 0U : read_u32(bytes, 116U);
+    const std::uint32_t trading_state = version < 6U ? 0U : read_u32(bytes, 120U);
     if (read_u32(bytes, 12U) != header_size || read_u32(bytes, 16U) != slot_size ||
         (version == 1U && self_trade_policy != 0U) ||
         (version >= 2U && self_trade_policy > static_cast<std::uint32_t>(SelfTradePolicy::cancel_taker)) ||
@@ -310,7 +313,8 @@ public:
         (version >= 4U &&
          (read_u32(bytes, 108U) > 1U ||
           (read_u32(bytes, 108U) == 0U && read_u64(bytes, 100U) != 0U))) ||
-        allocation_mode > static_cast<std::uint32_t>(AllocationMode::threshold_pro_rata)) {
+        allocation_mode > static_cast<std::uint32_t>(AllocationMode::threshold_pro_rata) ||
+        trading_state > static_cast<std::uint32_t>(TradingState::opening_auction)) {
       return std::unexpected{SnapshotError::invalid_header};
     }
     const std::uint32_t capacity = read_u32(bytes, 48U);
@@ -359,7 +363,8 @@ public:
           PriceDomain{Price{static_cast<std::int64_t>(read_u64(bytes, 32U))}, tick_count}, capacity,
           Quantity{max_quantity}, Sequence{next_sequence}, last_time,
           static_cast<SelfTradePolicy>(self_trade_policy),
-          static_cast<AllocationMode>(allocation_mode), Quantity{pro_rata_minimum});
+          static_cast<AllocationMode>(allocation_mode), Quantity{pro_rata_minimum},
+          static_cast<TradingState>(trading_state));
       engine->sequence_exhausted_ = exhausted == 1U;
       OrderBook& book = engine->order_book_;
       if (version >= 4U && read_u32(bytes, 108U) == 1U) {

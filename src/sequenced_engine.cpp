@@ -37,9 +37,9 @@ SequencedEngine::SequencedEngine(PriceDomain domain, std::size_t max_orders,
                                  Quantity max_order_quantity, Sequence next_sequence,
                  std::uint64_t last_logical_time,
                  SelfTradePolicy self_trade_policy, AllocationMode allocation_mode,
-                 Quantity pro_rata_minimum)
+                 Quantity pro_rata_minimum, TradingState trading_state)
   : order_book_{domain, max_orders, max_order_quantity, self_trade_policy, allocation_mode,
-                pro_rata_minimum},
+                pro_rata_minimum, trading_state},
       trade_scratch_{max_orders == 0U ? nullptr : std::make_unique<Trade[]>(max_orders)},
       trade_capacity_{max_orders}, next_sequence_{next_sequence.value()},
       last_logical_time_{last_logical_time} {
@@ -89,6 +89,8 @@ std::size_t SequencedEngine::required_event_capacity(const CommandPayload& paylo
   case CommandType::cancel:
   case CommandType::amend_quantity:
     return 1U;
+  case CommandType::uncross_opening_auction:
+    return trade_capacity_ + 1U;
   }
   return 0U;
 }
@@ -205,6 +207,21 @@ ApplyResult SequencedEngine::apply(const SequencedCommand& command,
       events[0].order_id = previous->id;
     }
     event_count += result.trade_count + order_book_.stop_activations().size();
+    break;
+  }
+  case CommandType::uncross_opening_auction: {
+    const AuctionResult result = order_book_.uncross_opening_auction(trades);
+    events[0] = {.command_sequence = command.sequence,
+                 .price = result.clearing_price.value_or(Price{0}),
+                 .quantity = result.executed_quantity,
+                 .event_index = 0U,
+                 .type = EngineEventType::auction_result,
+                 .reason = static_cast<std::uint8_t>(result.error)};
+    for (std::uint32_t index = 0U; index < result.trade_count; ++index) {
+      events[static_cast<std::size_t>(index) + 1U] =
+          EngineEvent::trade(command.sequence, index + 1U, trade_scratch_[index]);
+    }
+    event_count += result.trade_count;
     break;
   }
   }

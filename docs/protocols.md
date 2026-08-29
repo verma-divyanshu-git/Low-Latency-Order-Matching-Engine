@@ -10,6 +10,7 @@ Bytes 4 through 39 contain the canonical 36-byte `CommandPayload` encoding.
 The decoder rejects a wrong length, unsupported version, nonzero reserved header bytes, and invalid or noncanonical payloads.
 The command sequencer accepts caller-supplied logical time only.
 It never reads a clock.
+Command tag 9 ends an opening auction and has canonical zero values in every unused payload field.
 
 ## Market-data frame
 

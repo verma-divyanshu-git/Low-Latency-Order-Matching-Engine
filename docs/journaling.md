@@ -31,6 +31,7 @@ Shared nonmutating `OrderBook` preflight checks let invalid handle, zero or exce
 The same preflight path gives known limit, market, FOK, and full-arena rejections one result slot without duplicating matcher validation rules.
 With a zero-capacity arena, every command needs one result slot.
 Cancel and amend callers provide one result slot.
+Opening uncross callers provide one result slot plus the arena capacity for bounded trade events.
 The engine owns its fixed trade scratch storage from construction, so `apply` performs no allocation.
 Each stream starts with a result event and then contains trades in exact matching order, with command sequence and zero-based or increasing per-command event indexes.
 

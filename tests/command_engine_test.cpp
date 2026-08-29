@@ -37,6 +37,7 @@ TEST(CommandPayloadTest, CanonicalFactoriesCoverEveryCommandType) {
       CommandPayload::submit_stop_limit(OrderId{11}, Side::sell,
                     Price{std::numeric_limits<std::int64_t>::max()},
                     Price{99}, Quantity{5}),
+      CommandPayload::uncross_opening_auction(),
   };
 
   for (const CommandPayload& payload : payloads) {
@@ -183,6 +184,36 @@ TEST_F(SequencedEngineTest, EmitsResultThenTradesInExactOrder) {
             (EngineEvent::trade(Sequence{3}, 2U,
                                 Trade{OrderId{20}, OrderId{12}, Price{104}, Quantity{2}})));
   EXPECT_EQ(engine.order_book().order_info(first_handle), std::nullopt);
+}
+
+TEST(SequencedEngineOpeningAuctionTest, JournalsUncrossAndEmitsResultBeforeTrades) {
+  SequencedEngine engine{PriceDomain{Price{98}, 7U}, 4U, Quantity{10U}, Sequence{1U}, 0U,
+                         SelfTradePolicy::none, AllocationMode::fifo, Quantity{2U},
+                         TradingState::opening_auction};
+  std::array<EngineEvent, 9U> events{};
+  ASSERT_EQ(engine.apply({CommandPayload::submit_limit(OrderId{1U}, Side::buy, Price{102},
+                                                         Quantity{4U}),
+                          Sequence{1U}, 1U},
+                         events),
+            (ApplyResult{ApplyStatus::applied, 1U}));
+  ASSERT_EQ(engine.apply({CommandPayload::submit_limit(OrderId{2U}, Side::sell, Price{100},
+                                                         Quantity{3U}),
+                          Sequence{2U}, 2U},
+                         events),
+            (ApplyResult{ApplyStatus::applied, 1U}));
+
+  const ApplyResult result = engine.apply(
+      {CommandPayload::uncross_opening_auction(), Sequence{3U}, 3U}, events);
+
+  ASSERT_EQ(result, (ApplyResult{ApplyStatus::applied, 2U}));
+  EXPECT_EQ(events[0].type, EngineEventType::auction_result);
+  EXPECT_EQ(events[0].price, Price{101});
+  EXPECT_EQ(events[0].quantity, Quantity{3U});
+  EXPECT_EQ(events[0].reason, static_cast<std::uint8_t>(AuctionError::none));
+  EXPECT_EQ(events[1],
+            (EngineEvent::trade(Sequence{3U}, 1U,
+                                Trade{OrderId{1U}, OrderId{2U}, Price{101}, Quantity{3U}})));
+  EXPECT_EQ(engine.order_book().trading_state(), TradingState::continuous);
 }
 
 TEST_F(SequencedEngineTest, EmitsCancelAmendReplaceAndRejectionState) {

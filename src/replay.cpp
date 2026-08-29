@@ -39,7 +39,7 @@ std::uint64_t read_u64(std::span<const std::byte> bytes, std::size_t offset) noe
 bool valid_event_type(EngineEventType type) noexcept {
   return type == EngineEventType::submit_result || type == EngineEventType::trade ||
          type == EngineEventType::cancel_result || type == EngineEventType::amend_result ||
-         type == EngineEventType::stop_triggered;
+      type == EngineEventType::stop_triggered || type == EngineEventType::auction_result;
 }
 
 } // namespace

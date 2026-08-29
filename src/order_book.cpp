@@ -61,7 +61,7 @@ constexpr Handle kInvalidHandle{.index = kInvalidIndex, .generation = 0U};
 
 OrderBook::OrderBook(PriceDomain domain, std::size_t max_orders, Quantity max_order_quantity,
                      SelfTradePolicy self_trade_policy, AllocationMode allocation_mode,
-                     Quantity pro_rata_minimum)
+                     Quantity pro_rata_minimum, TradingState trading_state)
     : domain_{checked_domain(domain)},
       max_order_quantity_{checked_max_quantity(max_order_quantity)},
       bids_{std::make_unique<PriceLevel[]>(domain_.tick_count())},
@@ -94,6 +94,7 @@ OrderBook::OrderBook(PriceDomain domain, std::size_t max_orders, Quantity max_or
       allocation_mode_{allocation_mode},
       pro_rata_minimum_{checked_pro_rata_minimum(allocation_mode, pro_rata_minimum,
                      max_order_quantity_)},
+      trading_state_{trading_state},
       trade_report_indices_{arena_.capacity() == 0U
                 ? nullptr
                 : std::make_unique<std::uint32_t[]>(arena_.capacity())},
@@ -102,6 +103,10 @@ OrderBook::OrderBook(PriceDomain domain, std::size_t max_orders, Quantity max_or
                : std::make_unique<std::uint32_t[]>(arena_.capacity())},
       visit_marks_{arena_.capacity() == 0U ? nullptr
                                            : std::make_unique<std::uint32_t[]>(arena_.capacity())} {
+  if (trading_state != TradingState::continuous &&
+      trading_state != TradingState::opening_auction) {
+    throw std::invalid_argument{"invalid trading state"};
+  }
 }
 
 PriceDomain OrderBook::checked_domain(PriceDomain domain) {
@@ -158,11 +163,15 @@ RejectReason OrderBook::preflight_limit(Side side, Price price, Quantity quantit
   if (!level_index.has_value()) {
     return RejectReason::price_out_of_domain;
   }
+  if (trading_state_ == TradingState::opening_auction && time_in_force != TimeInForce::gtc) {
+    return RejectReason::invalid_trading_state;
+  }
   if (time_in_force == TimeInForce::fok && !can_fully_fill(side, *level_index, quantity.value())) {
     return RejectReason::fok_not_fillable;
   }
   if (time_in_force == TimeInForce::gtc && arena_.size() == arena_.capacity() &&
-      !has_crossing_order(side, *level_index)) {
+      (trading_state_ == TradingState::opening_auction ||
+       !has_crossing_order(side, *level_index))) {
     return RejectReason::order_capacity_exhausted;
   }
   return RejectReason::none;
@@ -170,6 +179,9 @@ RejectReason OrderBook::preflight_limit(Side side, Price price, Quantity quantit
 
 RejectReason OrderBook::preflight_post_only(Side side, Price price,
                                             Quantity quantity) const noexcept {
+  if (trading_state_ == TradingState::opening_auction) {
+    return RejectReason::invalid_trading_state;
+  }
   const RejectReason basic = preflight(side, quantity);
   if (basic != RejectReason::none) {
     return basic;
@@ -186,11 +198,17 @@ RejectReason OrderBook::preflight_post_only(Side side, Price price,
 }
 
 RejectReason OrderBook::preflight_market(Side side, Quantity quantity) const noexcept {
+  if (trading_state_ == TradingState::opening_auction) {
+    return RejectReason::invalid_trading_state;
+  }
   return preflight(side, quantity);
 }
 
 RejectReason OrderBook::preflight_stop(Side side, std::optional<Price> limit_price,
                                        Quantity quantity) const noexcept {
+  if (trading_state_ == TradingState::opening_auction) {
+    return RejectReason::invalid_trading_state;
+  }
   const RejectReason basic = preflight(side, quantity);
   if (basic != RejectReason::none) {
     return basic;
@@ -261,7 +279,9 @@ SubmitResult OrderBook::submit_limit(OrderId id, TraderId trader_id, Side side, 
 
   std::uint64_t remaining = quantity.value();
   std::uint32_t trade_count = 0U;
-  match(id, trader_id, side, level_index, remaining, trades, trade_count);
+  if (trading_state_ == TradingState::continuous) {
+    match(id, trader_id, side, level_index, remaining, trades, trade_count);
+  }
   const bool should_rest = time_in_force == TimeInForce::gtc && remaining != 0U;
   const Handle handle =
       should_rest ? rest(id, trader_id, side, level_index, remaining, remaining) : kInvalidHandle;
@@ -271,6 +291,80 @@ SubmitResult OrderBook::submit_limit(OrderId id, TraderId trader_id, Side side, 
           .unfilled_quantity = Quantity{remaining},
           .trade_count = trade_count,
           .resting_handle = handle};
+}
+
+AuctionResult OrderBook::uncross_opening_auction(std::span<Trade> trades) noexcept {
+  if (trading_state_ != TradingState::opening_auction) {
+    return {AuctionError::not_opening_auction, std::nullopt, Quantity{0U}, 0U};
+  }
+  if (trades.size() < required_trade_capacity()) {
+    return {AuctionError::insufficient_trade_capacity, std::nullopt, Quantity{0U}, 0U};
+  }
+
+  std::optional<std::uint32_t> clearing_level;
+  std::uint64_t maximum_executable = 0U;
+  std::uint64_t minimum_imbalance = std::numeric_limits<std::uint64_t>::max();
+  const auto best_bid_level = best_index(Side::buy);
+  const auto best_ask_level = best_index(Side::sell);
+  if (best_bid_level.has_value() && best_ask_level.has_value() &&
+      *best_bid_level >= *best_ask_level) {
+    const std::uint32_t reference_level = *best_ask_level + ((*best_bid_level - *best_ask_level) / 2U);
+    std::uint64_t eligible_bids = 0U;
+    for (std::uint32_t level_index = *best_ask_level; level_index <= *best_bid_level;
+         ++level_index) {
+      eligible_bids += level(Side::buy, level_index).aggregate_quantity;
+    }
+    std::uint64_t eligible_asks = 0U;
+    for (std::uint32_t level_index = *best_ask_level; level_index <= *best_bid_level;
+         ++level_index) {
+      eligible_asks += level(Side::sell, level_index).aggregate_quantity;
+      const std::uint64_t executable = std::min(eligible_bids, eligible_asks);
+      const std::uint64_t imbalance = eligible_bids > eligible_asks
+                                          ? eligible_bids - eligible_asks
+                                          : eligible_asks - eligible_bids;
+      const auto distance = [reference_level](std::uint32_t candidate) {
+        return candidate > reference_level ? candidate - reference_level
+                                           : reference_level - candidate;
+      };
+      if (executable > maximum_executable ||
+          (executable == maximum_executable && imbalance < minimum_imbalance) ||
+          (executable == maximum_executable && imbalance == minimum_imbalance &&
+           (!clearing_level.has_value() || distance(level_index) < distance(*clearing_level))) ||
+          (executable == maximum_executable && imbalance == minimum_imbalance &&
+           clearing_level.has_value() && distance(level_index) == distance(*clearing_level) &&
+           level_index > *clearing_level)) {
+        clearing_level = level_index;
+        maximum_executable = executable;
+        minimum_imbalance = imbalance;
+      }
+      eligible_bids -= level(Side::buy, level_index).aggregate_quantity;
+    }
+  }
+
+  trading_state_ = TradingState::continuous;
+  if (!clearing_level.has_value() || maximum_executable == 0U) {
+    return {};
+  }
+  const Price clearing_price = *domain_.price_at(*clearing_level);
+  std::uint64_t remaining = maximum_executable;
+  std::uint32_t trade_count = 0U;
+  auto bid_level = best_index(Side::buy);
+  auto ask_level = best_index(Side::sell);
+  while (remaining != 0U && bid_level.has_value() && ask_level.has_value() &&
+         *bid_level >= *clearing_level && *ask_level <= *clearing_level) {
+    const std::uint32_t bid_index = level(Side::buy, *bid_level).head_index;
+    const std::uint32_t ask_index = level(Side::sell, *ask_level).head_index;
+    const std::uint64_t execution =
+        std::min({remaining, displayed_remaining_[bid_index], displayed_remaining_[ask_index]});
+    execute_auction_match(bid_index, ask_index, clearing_price, execution, trades, trade_count);
+    remaining -= execution;
+    bid_level = best_index(Side::buy);
+    ask_level = best_index(Side::sell);
+  }
+  last_execution_price_ = clearing_price;
+  return {.clearing_price = clearing_price,
+          .executed_quantity = Quantity{maximum_executable - remaining},
+          .trade_count = trade_count};
 }
 
 SubmitResult OrderBook::submit_post_only(OrderId id, Side side, Price price, Quantity quantity,
@@ -295,6 +389,9 @@ SubmitResult OrderBook::submit_iceberg(OrderId id, TraderId trader_id, Side side
                                        Quantity quantity, Quantity display_quantity,
                                        std::span<Trade> trades) noexcept {
   reset_stop_activations();
+  if (trading_state_ == TradingState::opening_auction) {
+    return rejected(RejectReason::invalid_trading_state, quantity);
+  }
   if (display_quantity.value() == 0U || display_quantity > quantity) {
     return rejected(RejectReason::invalid_display_quantity, quantity);
   }
@@ -687,6 +784,35 @@ void OrderBook::execute_match(OrderId taker_id, Side taker_side, std::uint32_t l
         move_to_tail(maker_index);
       }
     }
+}
+
+void OrderBook::execute_auction_match(std::uint32_t bid_index, std::uint32_t ask_index,
+                                      Price clearing_price, std::uint64_t execution,
+                                      std::span<Trade> trades,
+                                      std::uint32_t& trade_count) noexcept {
+  const OrderId bid_id = arena_.order_at(bid_index).id;
+  const OrderId ask_id = arena_.order_at(ask_index).id;
+  trades[trade_count++] = {bid_id, ask_id, clearing_price, Quantity{execution}};
+
+  const auto reduce = [this, execution](std::uint32_t index) {
+    Order& order = arena_.order_at(index);
+    const Handle handle = arena_.handle_at(index);
+    const std::uint64_t remaining = order.remaining.value() - execution;
+    if (remaining == 0U) {
+      unlink(handle, execution);
+      return;
+    }
+    order.remaining = Quantity{remaining};
+    const Side side = detail::decode_side(order.encoded_level_side);
+    level(side, detail::decode_level(order.encoded_level_side)).aggregate_quantity -= execution;
+    displayed_remaining_[index] -= execution;
+    if (displayed_remaining_[index] == 0U) {
+      displayed_remaining_[index] = std::min(display_quantities_[index], remaining);
+      move_to_tail(index);
+    }
+  };
+  reduce(bid_index);
+  reduce(ask_index);
 }
 
 void OrderBook::move_to_tail(std::uint32_t order_index) noexcept {
@@ -1154,7 +1280,8 @@ InvariantResult OrderBook::check_invariants() noexcept {
 
   const auto bid = best_index(Side::buy);
   const auto ask = best_index(Side::sell);
-  if (bid.has_value() && ask.has_value() && *bid >= *ask) {
+  if (trading_state_ == TradingState::continuous && bid.has_value() && ask.has_value() &&
+      *bid >= *ask) {
     return invariant_failure(InvariantViolation::crossed_book, Side::buy, *bid, kInvalidIndex,
                              reachable_count);
   }

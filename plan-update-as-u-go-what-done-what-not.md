@@ -18,14 +18,15 @@ Last updated: 2026-08-29.
 
 ### In progress
 
-- Phase 4 threshold pro-rata with FIFO residue is implemented and locally validated on `feat/threshold-pro-rata`.
-- The pro-rata slice covers the production book, sequenced engine, independent reference model, differential simulator, snapshot v5, focused tests, and ADR-0022.
-- Pro-rata still needs commit, PR, green CI, merge to `main`, and feature-branch deletion.
+- Phase 4 threshold pro-rata with FIFO residue is implemented, committed at `9b7084c`, pushed, and locally validated on `feat/threshold-pro-rata`.
+- Phase 4 opening-cross auction is implemented and locally validated in the same working tree.
+- Opening-cross covers production and independent-reference semantics, deterministic price selection and FIFO execution, invariants, command encoding, sequenced events, journal replay, snapshot v6 with v1-v5 compatibility, differential tests, fuzz coverage, protocol documentation, and ADR-0023.
+- Local validation passes 260 of 260 debug tests and both 10,000-execution fuzz smoke tests.
+- GitHub integration remains: reconcile or create the pro-rata PR, commit and push opening-cross, obtain green CI, merge to `main`, and delete the feature branch.
 
 ### Not started
 
-- Phase 4 opening-cross auction is not implemented. It still needs a cited venue rule, production and reference semantics, differential, invariant, replay, snapshot, and fuzz coverage, an ADR, PR, CI, and merge.
-- Phase 4 is therefore not complete.
+- Phase 4 implementation is complete locally but is not yet integrated into `main`.
 - Phase 5 is not started.
 - Phase 5 still needs journal rotation with base-sequence semantics.
 - Phase 5 still needs snapshot-driven journal compaction.
@@ -46,7 +47,11 @@ Last updated: 2026-08-29.
 - In progress: `feat/threshold-pro-rata` contains an applied, uncommitted threshold pro-rata implementation across the production book, independent reference model, differential simulator, snapshot v5, and focused tests.
 - Fixed: snapshot format v5 made the unsupported-version regression's old version byte valid; the test now mutates v5 to version 6.
 - Verified: the pro-rata branch passes the full local debug catalog, 250 of 250 tests, and both 10,000-execution fuzz smoke tests.
-- Next: merge the pro-rata PR, then implement opening-cross auction to complete Phase 4.
+- Implemented: opening-cross accumulation, deterministic uncross price selection, FIFO execution, continuous-state transition, command and event encoding, replay, snapshot v6, independent reference behavior, differential checks, fuzz coverage, and ADR-0023.
+- Fixed: opening-auction fuzzing exposed a rejection-precedence mismatch in the independent reference model; the minimized input now passes.
+- Verified: the combined Phase 4 working tree passes 260 of 260 debug tests and both 10,000-execution fuzz smoke tests.
+- Blocked: the VS Code terminal Git channel exits with code 130 before producing output, and the isolated VS Code Python execution host is unavailable. No commit, PR, merge, or branch deletion was attempted after that failure.
+- Next: restore a functioning noninteractive Git execution channel, then commit and push opening-cross, integrate the Phase 4 PR or PRs into `main`, verify green CI, and delete the feature branch.
 
 - Done: `develop` now exists on `origin` from current `main`.
 - Done: local identity hooks require Divyanshu's personal commit identity and the approved GitHub account.

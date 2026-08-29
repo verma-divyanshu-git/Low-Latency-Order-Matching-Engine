@@ -17,6 +17,7 @@ enum class EngineEventType : std::uint8_t {
   cancel_result,
   amend_result,
   stop_triggered,
+  auction_result,
 };
 
 struct EngineEvent {
@@ -68,7 +69,8 @@ public:
                   Sequence next_sequence = Sequence{1U}, std::uint64_t last_logical_time = 0U,
                   SelfTradePolicy self_trade_policy = SelfTradePolicy::none,
                   AllocationMode allocation_mode = AllocationMode::fifo,
-                  Quantity pro_rata_minimum = Quantity{2U});
+                  Quantity pro_rata_minimum = Quantity{2U},
+                  TradingState trading_state = TradingState::continuous);
 
   SequencedEngine(const SequencedEngine&) = delete;
   SequencedEngine& operator=(const SequencedEngine&) = delete;

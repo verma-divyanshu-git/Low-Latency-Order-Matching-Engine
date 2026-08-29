@@ -125,6 +125,19 @@ TEST(EngineEventCodecTest, RoundTripsStopTriggeredWithoutChangingPayloadSize) {
   EXPECT_EQ(sizeof(EngineEvent), kEncodedEngineEventSize);
 }
 
+TEST(EngineEventCodecTest, RoundTripsAuctionResultWithoutChangingPayloadSize) {
+  const EngineEvent event{.command_sequence = Sequence{9U},
+                          .price = Price{101},
+                          .quantity = Quantity{7U},
+                          .type = EngineEventType::auction_result};
+  std::array<std::byte, kEncodedEngineEventSize> bytes{};
+
+  ASSERT_EQ(encode_engine_event(event, bytes), EventCodecError::none);
+  EXPECT_EQ(bytes[60], std::byte{0x05});
+  EXPECT_EQ(decode_engine_event(bytes), event);
+  EXPECT_EQ(sizeof(EngineEvent), kEncodedEngineEventSize);
+}
+
 TEST(MarketDataReplayTest, ReplaysValidatedFramesThroughGatewayAndMatcher) {
   TemporaryDirectory temporary;
   const auto path = temporary.path() / "market-data.bin";
@@ -327,7 +340,7 @@ TEST(SnapshotCodecTest, VersionFourSnapshotsDefaultToFifoAllocation) {
   SequencedEngine engine{PriceDomain{Price{100}, 3U}, 1U, Quantity{10U}};
   auto encoded = encode_snapshot(engine, SnapshotPoint{Sequence{0U}, 0U});
   ASSERT_TRUE(encoded.has_value());
-  encoded->erase(encoded->begin() + 112, encoded->begin() + 120);
+  encoded->erase(encoded->begin() + 112, encoded->begin() + 124);
   write_snapshot_u32(*encoded, 8U, 4U);
   write_snapshot_u32(*encoded, 12U, 112U);
   write_snapshot_u64(*encoded, 24U, encoded->size());
@@ -337,6 +350,49 @@ TEST(SnapshotCodecTest, VersionFourSnapshotsDefaultToFifoAllocation) {
   ASSERT_TRUE(restored.has_value());
   EXPECT_EQ(restored->engine->order_book().allocation_mode(), AllocationMode::fifo);
   EXPECT_EQ(restored->engine->order_book().pro_rata_minimum(), Quantity{0U});
+}
+
+TEST(SnapshotCodecTest, VersionFiveSnapshotsDefaultToContinuousTrading) {
+  SequencedEngine engine{PriceDomain{Price{100}, 3U}, 1U, Quantity{10U}};
+  auto encoded = encode_snapshot(engine, SnapshotPoint{Sequence{0U}, 0U});
+  ASSERT_TRUE(encoded.has_value());
+  encoded->erase(encoded->begin() + 120, encoded->begin() + 124);
+  write_snapshot_u32(*encoded, 8U, 5U);
+  write_snapshot_u32(*encoded, 12U, 120U);
+  write_snapshot_u64(*encoded, 24U, encoded->size());
+  rewrite_snapshot_crc_for_testing(*encoded);
+
+  const auto restored = decode_snapshot(*encoded);
+  ASSERT_TRUE(restored.has_value());
+  EXPECT_EQ(restored->engine->order_book().trading_state(), TradingState::continuous);
+}
+
+TEST(SnapshotCodecTest, RestoresCrossedOpeningBookBeforeDeterministicUncross) {
+  SequencedEngine engine{PriceDomain{Price{98}, 7U}, 4U, Quantity{10U}, Sequence{1U}, 0U,
+                         SelfTradePolicy::none, AllocationMode::fifo, Quantity{2U},
+                         TradingState::opening_auction};
+  std::array<Trade, 4U> trades{};
+  ASSERT_EQ(engine.order_book()
+                .submit_limit(OrderId{1U}, Side::buy, Price{102}, Quantity{4U}, trades)
+                .reject_reason,
+            RejectReason::none);
+  ASSERT_EQ(engine.order_book()
+                .submit_limit(OrderId{2U}, Side::sell, Price{100}, Quantity{3U}, trades)
+                .reject_reason,
+            RejectReason::none);
+  const auto encoded = encode_snapshot(engine, SnapshotPoint{Sequence{0U}, 0U});
+  ASSERT_TRUE(encoded.has_value());
+
+  const auto restored = decode_snapshot(*encoded);
+
+  ASSERT_TRUE(restored.has_value());
+  EXPECT_EQ(restored->engine->order_book().trading_state(), TradingState::opening_auction);
+  const AuctionResult result =
+      restored->engine->order_book().uncross_opening_auction(trades);
+  EXPECT_EQ(result.clearing_price, Price{101});
+  EXPECT_EQ(result.executed_quantity, Quantity{3U});
+  EXPECT_EQ(restored->engine->order_book().check_invariants().violation,
+            InvariantViolation::none);
 }
 
 TEST(SnapshotCodecTest, PreservesPartiallyConsumedIcebergDisplayState) {
@@ -366,7 +422,7 @@ TEST(SnapshotCodecTest, RejectsCorruptionAndNoncanonicalDeadPayload) {
   SequencedEngine engine{PriceDomain{Price{0}, 1U}, 1U, Quantity{1U}};
   auto bytes = encode_snapshot(engine, SnapshotPoint{Sequence{0U}, 0U});
   ASSERT_TRUE(bytes.has_value());
-  (*bytes)[8] = std::byte{6U};
+  (*bytes)[8] = std::byte{7U};
   EXPECT_EQ(decode_snapshot(*bytes).error(), SnapshotError::unsupported_version);
 
   bytes = encode_snapshot(engine, SnapshotPoint{Sequence{0U}, 0U});
@@ -384,7 +440,7 @@ TEST(SnapshotCodecTest, ReachesEveryHeaderAndArenaValidatorWithValidCrc) {
   const std::size_t second = first + kSnapshotSlotSize;
 
   expect_snapshot_mutation(
-      *encoded, [](auto& bytes) { write_snapshot_u32(bytes, 8U, 6U); },
+      *encoded, [](auto& bytes) { write_snapshot_u32(bytes, 8U, 7U); },
       SnapshotError::unsupported_version);
   expect_snapshot_mutation(
       *encoded, [](auto& bytes) { bytes[0U] = std::byte{'X'}; }, SnapshotError::invalid_header);
@@ -412,6 +468,9 @@ TEST(SnapshotCodecTest, ReachesEveryHeaderAndArenaValidatorWithValidCrc) {
     expect_snapshot_mutation(
       *encoded, [](auto& bytes) { write_snapshot_u32(bytes, 116U, 1U); },
       SnapshotError::invalid_configuration);
+      expect_snapshot_mutation(
+        *encoded, [](auto& bytes) { write_snapshot_u32(bytes, 120U, 2U); },
+        SnapshotError::invalid_header);
   expect_snapshot_mutation(
       *encoded, [](auto& bytes) { write_snapshot_u32(bytes, 48U, 3U); },
       SnapshotError::invalid_length);
@@ -685,6 +744,49 @@ TEST(ReplayTest, SnapshotBoundarySkipsPrefixAndReplaysExactSuffix) {
   EXPECT_EQ(replayed->fingerprint.crc32c(), expected.crc32c());
   EXPECT_EQ(restored->engine->order_book().best_bid(), uninterrupted.order_book().best_bid());
   EXPECT_EQ(restored->engine->order_book().best_ask(), uninterrupted.order_book().best_ask());
+}
+
+TEST(ReplayTest, OpeningCrossCommandReplaysToIdenticalEventsAndBook) {
+  TemporaryDirectory temporary;
+  const auto journal_path = temporary.path() / "opening-cross.journal";
+  auto journal = MmapJournal::create(journal_path, 3U);
+  ASSERT_TRUE(journal.has_value());
+  const std::array commands{
+      SequencedCommand{
+          CommandPayload::submit_limit(OrderId{1U}, Side::buy, Price{102}, Quantity{4U}),
+          Sequence{1U}, 1U},
+      SequencedCommand{
+          CommandPayload::submit_limit(OrderId{2U}, Side::sell, Price{100}, Quantity{3U}),
+          Sequence{2U}, 2U},
+      SequencedCommand{CommandPayload::uncross_opening_auction(), Sequence{3U}, 3U},
+  };
+  SequencedEngine uninterrupted{PriceDomain{Price{98}, 7U}, 4U, Quantity{10U}, Sequence{1U}, 0U,
+                                SelfTradePolicy::none, AllocationMode::fifo, Quantity{2U},
+                                TradingState::opening_auction};
+  std::array<EngineEvent, 9U> events{};
+  ReplayFingerprint expected;
+  for (const SequencedCommand& command : commands) {
+    ASSERT_EQ(journal->append(command), JournalError::none);
+    const ApplyResult applied = uninterrupted.apply(command, events);
+    ASSERT_EQ(applied.status, ApplyStatus::applied);
+    for (std::size_t index = 0U; index < applied.event_count; ++index) {
+      ASSERT_EQ(expected.add(events[index]), EventCodecError::none);
+    }
+  }
+
+  SequencedEngine replayed{PriceDomain{Price{98}, 7U}, 4U, Quantity{10U}, Sequence{1U}, 0U,
+                           SelfTradePolicy::none, AllocationMode::fifo, Quantity{2U},
+                           TradingState::opening_auction};
+  const auto result = replay_journal(*journal, replayed, Sequence{0U}, 0U, events);
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->commands_applied, commands.size());
+  EXPECT_EQ(result->fingerprint.event_count(), expected.event_count());
+  EXPECT_EQ(result->fingerprint.crc32c(), expected.crc32c());
+  EXPECT_EQ(replayed.order_book().trading_state(), TradingState::continuous);
+  EXPECT_EQ(replayed.order_book().best_bid(), uninterrupted.order_book().best_bid());
+  EXPECT_EQ(replayed.order_book().best_ask(), uninterrupted.order_book().best_ask());
+  EXPECT_EQ(replayed.order_book().check_invariants().violation, InvariantViolation::none);
 }
 
 TEST(ReplayTest, ExactMixedContinuationPreservesEventsHandlesAndNextAllocation) {
