@@ -142,6 +142,96 @@ TEST_F(OrderBookTest, PassiveOrdersRestAndPublishBboAndLevelAggregates) {
   EXPECT_EQ(book.level_info(Side::buy, Price{99}), std::nullopt);
 }
 
+TEST(OrderBookStopTest, StopsShareCapacityCancelSafelyAndReuseGeneration) {
+  OrderBook book{PriceDomain{Price{0}, 201U}, 1U, Quantity{50U}};
+  std::array<Trade, 1U> trades{};
+
+  const SubmitResult stop =
+    book.submit_stop(OrderId{1U}, Side::buy, Price{100}, Quantity{2U}, trades);
+  ASSERT_EQ(stop.reject_reason, RejectReason::none);
+  ASSERT_NE(stop.resting_handle, kNoHandle);
+  EXPECT_EQ(book.submit_limit(OrderId{2U}, Side::buy, Price{90}, Quantity{1U}, trades).reject_reason,
+      RejectReason::order_capacity_exhausted);
+  EXPECT_EQ(book.cancel(stop.resting_handle),
+      (CancelResult{CancelReason::none, OrderId{1U}, Quantity{2U}}));
+  EXPECT_EQ(book.cancel(stop.resting_handle).reject_reason, CancelReason::invalid_handle);
+
+  const SubmitResult replacement =
+    book.submit_stop_limit(OrderId{3U}, Side::sell, Price{80}, Price{81}, Quantity{1U}, trades);
+  EXPECT_EQ(replacement.resting_handle.index, stop.resting_handle.index);
+  EXPECT_NE(replacement.resting_handle.generation, stop.resting_handle.generation);
+  EXPECT_EQ(book.check_invariants().violation, InvariantViolation::none);
+}
+
+TEST(OrderBookStopTest, DormantStopQuantityCanOnlyDecrease) {
+  OrderBook book{PriceDomain{Price{0}, 201U}, 1U, Quantity{10U}};
+  std::array<Trade, 1U> trades{};
+  const Handle stop =
+      book.submit_stop(OrderId{1U}, Side::buy, Price{100}, Quantity{6U}, trades).resting_handle;
+
+  EXPECT_EQ(book.amend_quantity(stop, Quantity{0U}).reject_reason, AmendReason::zero_quantity);
+  EXPECT_EQ(book.amend_quantity(stop, Quantity{7U}).reject_reason,
+            AmendReason::increase_not_allowed);
+  EXPECT_EQ(book.amend_quantity(stop, Quantity{4U}),
+            (AmendResult{AmendReason::none, OrderId{1U}, Quantity{6U}, Quantity{4U}, stop}));
+  EXPECT_EQ(book.order_info(stop),
+            (OrderInfo{OrderId{1U}, Side::buy, Price{0}, Quantity{4U}}));
+  EXPECT_EQ(book.check_invariants().violation, InvariantViolation::none);
+}
+
+TEST(OrderBookStopTest, LastTradeDrivesImmediateAndDeterministicCascadeActivation) {
+  OrderBook book{PriceDomain{Price{0}, 201U}, 8U, Quantity{50U}};
+  std::array<Trade, 8U> trades{};
+  ASSERT_EQ(book.submit_limit(OrderId{1U}, Side::sell, Price{100}, Quantity{2U}, trades)
+        .reject_reason,
+      RejectReason::none);
+  ASSERT_EQ(book.submit_limit(OrderId{2U}, Side::sell, Price{110}, Quantity{2U}, trades)
+        .reject_reason,
+      RejectReason::none);
+  ASSERT_EQ(book.submit_limit(OrderId{7U}, Side::buy, Price{99}, Quantity{1U}, trades).reject_reason,
+      RejectReason::none);
+  const Handle buy_stop =
+    book.submit_stop(OrderId{3U}, Side::buy, Price{100}, Quantity{1U}, trades).resting_handle;
+  const Handle sell_stop = book
+                 .submit_stop_limit(OrderId{4U}, Side::sell, Price{110}, Price{99},
+                          Quantity{1U}, trades)
+                 .resting_handle;
+
+  const SubmitResult trigger =
+    book.submit_market(OrderId{5U}, Side::buy, Quantity{2U}, trades);
+
+  ASSERT_EQ(trigger.trade_count, 3U);
+  EXPECT_EQ(trades[0], (Trade{OrderId{5U}, OrderId{1U}, Price{100}, Quantity{2U}}));
+  EXPECT_EQ(trades[1], (Trade{OrderId{3U}, OrderId{2U}, Price{110}, Quantity{1U}}));
+  EXPECT_EQ(trades[2], (Trade{OrderId{7U}, OrderId{4U}, Price{99}, Quantity{1U}}));
+  EXPECT_EQ(book.last_execution_price(), Price{99});
+  EXPECT_EQ(book.cancel(buy_stop).reject_reason, CancelReason::invalid_handle);
+  EXPECT_EQ(book.cancel(sell_stop).reject_reason, CancelReason::invalid_handle);
+
+  const SubmitResult immediate = book.submit_stop_limit(
+    OrderId{6U}, Side::buy, Price{90}, Price{98}, Quantity{1U}, trades);
+  EXPECT_EQ(immediate.executed_quantity, Quantity{0U});
+  ASSERT_NE(immediate.resting_handle, kNoHandle);
+  EXPECT_EQ(book.order_info(immediate.resting_handle),
+      (OrderInfo{OrderId{6U}, Side::buy, Price{98}, Quantity{1U}}));
+  EXPECT_EQ(book.check_invariants().violation, InvariantViolation::none);
+}
+
+TEST(OrderBookStopTest, InsufficientTradeCapacityCannotPartiallyTrigger) {
+  OrderBook book{PriceDomain{Price{0}, 201U}, 2U, Quantity{50U}};
+  std::array<Trade, 2U> trades{};
+  const Handle maker =
+    book.submit_limit(OrderId{1U}, Side::sell, Price{100}, Quantity{1U}, trades).resting_handle;
+
+  const SubmitResult rejected = book.submit_market(
+    OrderId{2U}, Side::buy, Quantity{1U}, std::span<Trade>{trades}.first(1U));
+
+  EXPECT_EQ(rejected.reject_reason, RejectReason::insufficient_trade_capacity);
+  EXPECT_EQ(book.order_info(maker),
+      (OrderInfo{OrderId{1U}, Side::sell, Price{100}, Quantity{1U}}));
+  EXPECT_EQ(book.last_execution_price(), std::nullopt);
+}
+
 TEST_F(OrderBookTest, OrderInfoReturnsLiveStateAndRejectsStaleAndOutOfRangeHandles) {
   const SubmitResult resting = limit(42, Side::sell, 104, 7);
   ASSERT_EQ(resting.reject_reason, RejectReason::none);

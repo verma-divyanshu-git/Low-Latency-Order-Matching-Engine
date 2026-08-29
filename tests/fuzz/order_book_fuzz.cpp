@@ -124,7 +124,8 @@ decode_target(std::uint8_t byte, const std::vector<TrackedOrder>& tracked) {
 }
 
 void compare_submit(const SubmitResult& engine, const ModelSubmitResult& model,
-                    const std::array<Trade, kCapacity>& trades) {
+                    const std::array<Trade, kCapacity>& trades,
+                    std::span<const StopActivation> stop_activations) {
   require(engine.reject_reason == model.reject_reason);
   require(engine.executed_quantity == model.executed_quantity);
   require(engine.unfilled_quantity == model.unfilled_quantity);
@@ -134,6 +135,16 @@ void compare_submit(const SubmitResult& engine, const ModelSubmitResult& model,
   for (std::size_t index = 0U; index < model.trades.size(); ++index) {
     require(trades[index] == model.trades[index]);
   }
+    require(stop_activations.size() == model.stop_activations.size());
+    for (std::size_t index = 0U; index < model.stop_activations.size(); ++index) {
+      require(stop_activations[index].order_id == model.stop_activations[index].order_id);
+      require(stop_activations[index].executed_quantity ==
+        model.stop_activations[index].executed_quantity);
+      require(stop_activations[index].unfilled_quantity ==
+        model.stop_activations[index].unfilled_quantity);
+      require((stop_activations[index].resting_handle.generation != 0U) ==
+        model.stop_activations[index].remains_resting);
+    }
 }
 
 void track_resting(const SubmitResult& engine, const ModelSubmitResult& model,
@@ -177,7 +188,7 @@ void compare_state(OrderBook& engine, const ReferenceOrderBook& model,
 
 void execute(ByteReader& reader, OrderId id, OrderBook& engine, ReferenceOrderBook& model,
              std::array<Trade, kCapacity>& trade_storage, std::vector<TrackedOrder>& tracked) {
-  const std::uint8_t operation = reader.read() % 6U;
+  const std::uint8_t operation = reader.read() % 8U;
   const Side side = decode_side(reader.read());
   const Price price = decode_price(reader.read());
   const Quantity quantity = decode_quantity(reader.read());
@@ -192,14 +203,14 @@ void execute(ByteReader& reader, OrderId id, OrderBook& engine, ReferenceOrderBo
         engine.submit_limit(id, side, price, quantity, time_in_force, trades);
     const ModelSubmitResult model_result =
         model.submit_limit(id, side, price, quantity, time_in_force, trade_capacity);
-    compare_submit(engine_result, model_result, trade_storage);
+    compare_submit(engine_result, model_result, trade_storage, engine.stop_activations());
     track_resting(engine_result, model_result, tracked);
     break;
   }
   case 1U: {
     const SubmitResult engine_result = engine.submit_market(id, side, quantity, trades);
     const ModelSubmitResult model_result = model.submit_market(id, side, quantity, trade_capacity);
-    compare_submit(engine_result, model_result, trade_storage);
+    compare_submit(engine_result, model_result, trade_storage, engine.stop_activations());
     break;
   }
   case 2U: {
@@ -232,7 +243,7 @@ void execute(ByteReader& reader, OrderId id, OrderBook& engine, ReferenceOrderBo
     const SubmitResult engine_result = engine.replace(engine_handle, price, quantity, trades);
     const ModelSubmitResult model_result =
         model.replace(model_token, price, quantity, trade_capacity);
-    compare_submit(engine_result, model_result, trade_storage);
+    compare_submit(engine_result, model_result, trade_storage, engine.stop_activations());
     track_resting(engine_result, model_result, tracked);
     break;
   }
@@ -243,7 +254,25 @@ void execute(ByteReader& reader, OrderId id, OrderBook& engine, ReferenceOrderBo
     const ModelSubmitResult model_result =
         model.submit_iceberg(id, TraderId{0U}, side, price, quantity, display_quantity,
                              trade_capacity);
-    compare_submit(engine_result, model_result, trade_storage);
+    compare_submit(engine_result, model_result, trade_storage, engine.stop_activations());
+    track_resting(engine_result, model_result, tracked);
+    break;
+  }
+  case 6U: {
+    const SubmitResult engine_result = engine.submit_stop(id, side, price, quantity, trades);
+    const ModelSubmitResult model_result =
+        model.submit_stop(id, side, price, quantity, trade_capacity);
+    compare_submit(engine_result, model_result, trade_storage, engine.stop_activations());
+    track_resting(engine_result, model_result, tracked);
+    break;
+  }
+  case 7U: {
+    const Price limit_price = decode_price(target_byte);
+    const SubmitResult engine_result =
+        engine.submit_stop_limit(id, side, price, limit_price, quantity, trades);
+    const ModelSubmitResult model_result =
+        model.submit_stop_limit(id, side, price, limit_price, quantity, trade_capacity);
+    compare_submit(engine_result, model_result, trade_storage, engine.stop_activations());
     track_resting(engine_result, model_result, tracked);
     break;
   }

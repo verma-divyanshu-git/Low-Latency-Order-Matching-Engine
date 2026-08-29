@@ -17,12 +17,20 @@ namespace matching_engine::test {
 
 using ModelToken = std::uint64_t;
 
+struct ModelStopActivation {
+  OrderId order_id{0U};
+  Quantity executed_quantity{0U};
+  Quantity unfilled_quantity{0U};
+  bool remains_resting{};
+};
+
 struct ModelSubmitResult {
   RejectReason reject_reason{RejectReason::none};
   Quantity executed_quantity{0U};
   Quantity unfilled_quantity{0U};
   std::optional<ModelToken> resting_token;
   std::vector<Trade> trades;
+  std::vector<ModelStopActivation> stop_activations;
   bool phantom_fills_valid{true};
 };
 
@@ -89,6 +97,7 @@ public:
     if (time_in_force == TimeInForce::gtc && remaining != 0U) {
       result.resting_token = rest(id, trader_id, side, price, Quantity{remaining});
     }
+    trigger_stops(result);
     return result;
   }
 
@@ -103,7 +112,19 @@ public:
     match(id, side, std::nullopt, remaining, result);
     result.executed_quantity = Quantity{quantity.value() - remaining};
     result.unfilled_quantity = Quantity{remaining};
+    trigger_stops(result);
     return result;
+  }
+
+  [[nodiscard]] ModelSubmitResult submit_stop(OrderId id, Side side, Price trigger_price,
+                                              Quantity quantity, std::size_t trade_capacity) {
+    return submit_stop_order(id, side, trigger_price, std::nullopt, quantity, trade_capacity);
+  }
+
+  [[nodiscard]] ModelSubmitResult submit_stop_limit(OrderId id, Side side, Price trigger_price,
+                                                    Price limit_price, Quantity quantity,
+                                                    std::size_t trade_capacity) {
+    return submit_stop_order(id, side, trigger_price, limit_price, quantity, trade_capacity);
   }
 
   [[nodiscard]] ModelSubmitResult submit_post_only(OrderId id, Side side, Price price,
@@ -152,10 +173,21 @@ public:
       result.resting_token = rest(id, trader_id, side, price, Quantity{remaining},
                                   Quantity{std::min(display_quantity.value(), remaining)});
     }
+    trigger_stops(result);
     return result;
   }
 
   [[nodiscard]] ModelCancelResult cancel(ModelToken token) {
+    const auto dormant = std::find_if(stops_.begin(), stops_.end(),
+                                      [token](const DormantStop& stop) {
+                                        return stop.token == token;
+                                      });
+    if (dormant != stops_.end()) {
+      const ModelCancelResult result{CancelReason::none, dormant->id, dormant->quantity};
+      stops_.erase(dormant);
+      --live_order_count_;
+      return result;
+    }
     const auto location = locate(token);
     if (!location.has_value()) {
       return {CancelReason::invalid_handle, OrderId{0U}, Quantity{0U}};
@@ -171,6 +203,24 @@ public:
   }
 
   [[nodiscard]] ModelAmendResult amend_quantity(ModelToken token, Quantity new_remaining) {
+    const auto dormant = std::find_if(stops_.begin(), stops_.end(),
+                                      [token](const DormantStop& stop) {
+                                        return stop.token == token;
+                                      });
+    if (dormant != stops_.end()) {
+      const Quantity previous = dormant->quantity;
+      if (new_remaining.value() == 0U) {
+        return {AmendReason::zero_quantity, dormant->id, previous, new_remaining, token};
+      }
+      if (new_remaining.value() > max_order_quantity_) {
+        return {AmendReason::quantity_too_large, dormant->id, previous, new_remaining, token};
+      }
+      if (new_remaining > previous) {
+        return {AmendReason::increase_not_allowed, dormant->id, previous, new_remaining, token};
+      }
+      dormant->quantity = new_remaining;
+      return {AmendReason::none, dormant->id, previous, new_remaining, token};
+    }
     const auto location = locate(token);
     if (!location.has_value()) {
       return {AmendReason::invalid_handle, OrderId{0U}, Quantity{0U}, new_remaining,
@@ -237,6 +287,14 @@ public:
   }
 
   [[nodiscard]] std::optional<OrderInfo> order_info(ModelToken token) const {
+    const auto dormant = std::find_if(stops_.begin(), stops_.end(),
+                                      [token](const DormantStop& stop) {
+                                        return stop.token == token;
+                                      });
+    if (dormant != stops_.end()) {
+      return OrderInfo{dormant->id, dormant->side, dormant->limit_price.value_or(Price{0}),
+                       dormant->quantity};
+    }
     for (const auto& [price, orders] : bids_) {
       for (const ModelOrder& order : orders) {
         if (order.token == token) {
@@ -268,7 +326,14 @@ public:
         }
       }
     }
+    for (const DormantStop& stop : stops_) {
+      total += stop.quantity.value();
+    }
     return total;
+  }
+
+  [[nodiscard]] std::optional<Price> last_execution_price() const noexcept {
+    return last_execution_price_;
   }
 
 private:
@@ -280,6 +345,15 @@ private:
     Quantity remaining;
     Quantity display_quantity;
     Quantity displayed_remaining;
+  };
+
+  struct DormantStop {
+    ModelToken token;
+    OrderId id;
+    Side side;
+    Price trigger_price;
+    std::optional<Price> limit_price;
+    Quantity quantity;
   };
 
   using Queue = std::deque<ModelOrder>;
@@ -322,6 +396,92 @@ private:
     result.reject_reason = reason;
     result.unfilled_quantity = quantity;
     return result;
+  }
+
+  [[nodiscard]] bool is_triggered(Side side, Price trigger_price) const {
+    if (!last_execution_price_.has_value()) {
+      return false;
+    }
+    return side == Side::buy ? *last_execution_price_ >= trigger_price
+                             : *last_execution_price_ <= trigger_price;
+  }
+
+  [[nodiscard]] ModelSubmitResult submit_stop_order(OrderId id, Side side, Price trigger_price,
+                                                    std::optional<Price> limit_price,
+                                                    Quantity quantity,
+                                                    std::size_t trade_capacity) {
+    if (!is_valid_side(side)) {
+      return rejected(RejectReason::invalid_side, quantity);
+    }
+    if (quantity.value() == 0U) {
+      return rejected(RejectReason::zero_quantity, quantity);
+    }
+    if (quantity.value() > max_order_quantity_) {
+      return rejected(RejectReason::quantity_too_large, quantity);
+    }
+    if (limit_price.has_value() && !contains(*limit_price)) {
+      return rejected(RejectReason::price_out_of_domain, quantity);
+    }
+    if (live_order_count_ == max_orders_) {
+      return rejected(RejectReason::order_capacity_exhausted, quantity);
+    }
+    if (trade_capacity < max_orders_) {
+      return rejected(RejectReason::insufficient_trade_capacity, quantity);
+    }
+
+    const ModelToken token = next_token_++;
+    ++live_order_count_;
+    if (is_triggered(side, trigger_price)) {
+      ModelSubmitResult result;
+      std::uint64_t remaining = quantity.value();
+      match(id, side, limit_price, remaining, result);
+      result.executed_quantity = Quantity{quantity.value() - remaining};
+      result.unfilled_quantity = Quantity{remaining};
+      if (limit_price.has_value() && remaining != 0U) {
+        rest_existing(token, id, TraderId{0U}, side, *limit_price, Quantity{remaining});
+        result.resting_token = token;
+      } else {
+        --live_order_count_;
+      }
+      result.stop_activations.push_back(
+          {id, Quantity{quantity.value() - remaining}, Quantity{remaining},
+           result.resting_token.has_value()});
+      trigger_stops(result);
+      return result;
+    }
+
+    stops_.push_back(DormantStop{token, id, side, trigger_price, limit_price, quantity});
+    ModelSubmitResult result;
+    result.unfilled_quantity = quantity;
+    result.resting_token = token;
+    return result;
+  }
+
+  void trigger_stops(ModelSubmitResult& result) {
+    while (true) {
+      const auto triggered = std::find_if(stops_.begin(), stops_.end(),
+                                           [this](const DormantStop& stop) {
+                                             return is_triggered(stop.side, stop.trigger_price);
+                                           });
+      if (triggered == stops_.end()) {
+        return;
+      }
+      const DormantStop stop = *triggered;
+      stops_.erase(triggered);
+      std::uint64_t remaining = stop.quantity.value();
+      match(stop.id, stop.side, stop.limit_price, remaining, result);
+      bool remains_resting = false;
+      if (stop.limit_price.has_value() && remaining != 0U) {
+        rest_existing(stop.token, stop.id, TraderId{0U}, stop.side, *stop.limit_price,
+                      Quantity{remaining});
+        remains_resting = true;
+      } else {
+        --live_order_count_;
+      }
+      result.stop_activations.push_back(
+          {stop.id, Quantity{stop.quantity.value() - remaining}, Quantity{remaining},
+           remains_resting});
+    }
   }
 
   [[nodiscard]] bool has_crossing_order(Side side, Price price) const {
@@ -421,6 +581,7 @@ private:
       const Trade trade = taker_side == Side::buy
               ? Trade{taker_id, maker.id, Price{maker_price}, Quantity{execution}}
               : Trade{maker.id, taker_id, Price{maker_price}, Quantity{execution}};
+            last_execution_price_ = trade.price;
       const bool valid_ids = taker_side == Side::buy
                                  ? trade.buy_id == taker_id && trade.sell_id == maker.id
                                  : trade.sell_id == taker_id && trade.buy_id == maker.id;
@@ -469,6 +630,13 @@ private:
     return token;
   }
 
+  void rest_existing(ModelToken token, OrderId id, TraderId trader_id, Side side, Price price,
+                     Quantity remaining) {
+    Levels& levels = side == Side::buy ? bids_ : asks_;
+    levels[price.ticks()].push_back(
+        ModelOrder{token, id, trader_id, side, remaining, remaining, remaining});
+  }
+
   [[nodiscard]] std::optional<Location> locate(ModelToken token) {
     for (Levels* levels : {&bids_, &asks_}) {
       for (auto level = levels->begin(); level != levels->end(); ++level) {
@@ -490,6 +658,8 @@ private:
   SelfTradePolicy self_trade_policy_;
   Levels bids_;
   Levels asks_;
+  std::deque<DormantStop> stops_;
+  std::optional<Price> last_execution_price_;
   std::size_t live_order_count_{};
   ModelToken next_token_{1U};
 };

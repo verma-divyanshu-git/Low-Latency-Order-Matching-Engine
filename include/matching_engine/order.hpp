@@ -14,6 +14,8 @@ namespace matching_engine {
 inline constexpr std::uint32_t kInvalidIndex = std::numeric_limits<std::uint32_t>::max();
 inline constexpr std::uint32_t kOrderLevelMask = 0x7fff'ffffU;
 inline constexpr std::uint32_t kOrderSideMask = 0x8000'0000U;
+inline constexpr std::uint32_t kOrderFlagDormantStop = 0x0000'0001U;
+inline constexpr std::uint32_t kOrderFlagStopMarket = 0x0000'0002U;
 
 namespace detail {
 
@@ -53,7 +55,7 @@ struct Order {
   // Bit 31 encodes Side, with zero for buy and one for sell.
   std::uint32_t encoded_level_side;
 
-  // Reserved for future order flags and must be explicitly initialized by callers.
+  // Dormant stop state. Active orders always use zero.
   std::uint32_t reserved_flags;
 };
 

@@ -47,4 +47,19 @@ TEST(CommandProtocolTest, RoundTripsIcebergDisplayQuantity) {
   EXPECT_EQ(decoded->iceberg_display_quantity(), Quantity{3U});
 }
 
+TEST(CommandProtocolTest, RoundTripsFullWidthStopTriggerPrices) {
+  const std::array payloads{
+      CommandPayload::submit_stop(OrderId{8U}, Side::buy,
+                                  Price{std::numeric_limits<std::int64_t>::min()}, Quantity{2U}),
+      CommandPayload::submit_stop_limit(OrderId{9U}, Side::sell,
+                                        Price{std::numeric_limits<std::int64_t>::max()},
+                                        Price{-11}, Quantity{3U}),
+  };
+  for (const CommandPayload& payload : payloads) {
+    std::array<std::byte, kEncodedCommandFrameSize> encoded{};
+    ASSERT_EQ(encode_command_frame(payload, encoded), CommandFrameError{});
+    ASSERT_EQ(decode_command_frame(encoded), payload);
+  }
+}
+
 } // namespace matching_engine

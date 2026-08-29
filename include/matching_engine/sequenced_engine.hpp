@@ -16,6 +16,7 @@ enum class EngineEventType : std::uint8_t {
   trade,
   cancel_result,
   amend_result,
+  stop_triggered,
 };
 
 struct EngineEvent {
@@ -76,7 +77,7 @@ public:
                                   std::span<EngineEvent> events) noexcept;
   [[nodiscard]] std::size_t required_event_capacity(const CommandPayload& payload) const noexcept;
   [[nodiscard]] std::size_t maximum_event_capacity() const noexcept {
-    return trade_capacity_ + 1U;
+    return (trade_capacity_ * 2U) + 1U;
   }
   [[nodiscard]] OrderBook& order_book() noexcept {
     return order_book_;

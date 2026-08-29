@@ -134,4 +134,34 @@ TEST(MarketDataAdapterTest, MapsReplacesToRecordedGenerationHandle) {
   EXPECT_EQ(adapter.adapt(unknown).error(), MarketDataAdaptError::unknown_order);
 }
 
+TEST(MarketDataAdapterTest, StopTriggerReleasesOrUpdatesRecordedHandle) {
+  MarketDataAdapter adapter{GatewayValidator{gateway_config()}};
+  const MarketDataMessage first{.sequence = 1U,
+                                .order_id = OrderId{11U},
+                                .price = Price{101},
+                                .quantity = Quantity{1U},
+                                .type = MarketDataMessageType::add_order,
+                                .side = Side::buy};
+  ASSERT_TRUE(adapter.adapt(first).has_value());
+  adapter.record_applied_event(
+      {.order_id = OrderId{11U}, .handle = Handle{3U, 7U}, .type = EngineEventType::submit_result});
+  adapter.record_applied_event({.order_id = OrderId{11U},
+                                .handle = Handle{4U, 8U},
+                                .type = EngineEventType::stop_triggered});
+
+  const MarketDataMessage remove{.sequence = 2U,
+                                 .order_id = OrderId{11U},
+                                 .type = MarketDataMessageType::delete_order};
+  const auto remove_command = adapter.adapt(remove);
+  ASSERT_TRUE(remove_command.has_value());
+  EXPECT_EQ(remove_command->payload, CommandPayload::cancel(Handle{4U, 8U}));
+
+  adapter.record_applied_event({.order_id = OrderId{11U},
+                                .handle = Handle{kInvalidIndex, 0U},
+                                .type = EngineEventType::stop_triggered});
+  MarketDataMessage reused = first;
+  reused.sequence = 3U;
+  EXPECT_TRUE(adapter.adapt(reused).has_value());
+}
+
 } // namespace matching_engine

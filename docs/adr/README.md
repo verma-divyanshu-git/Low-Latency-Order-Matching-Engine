@@ -26,3 +26,5 @@ A new record supersedes a decision when the architecture changes.
 - [ADR-0017: Versioned market-data frames](0017-versioned-market-data-frames.md)
 - [ADR-0018: Gateway-backed market-data replay](0018-gateway-backed-market-data-replay.md)
 - [ADR-0019: Canonical MBO and MBP publication](0019-canonical-mbo-and-mbp-publication.md)
+- [ADR-0020: Iceberg replenishment](0020-iceberg-replenishment.md)
+- [ADR-0021: Stop-order trigger cascades](0021-stop-order-trigger-cascades.md)

@@ -242,6 +242,9 @@ public:
     write_u64(bytes, 72U, engine.last_logical_time_);
     write_u64(bytes, 80U, point.sequence.value());
     write_u64(bytes, 88U, point.logical_time);
+    write_u64(bytes, 100U,
+          static_cast<std::uint64_t>(book.last_execution_price_.value_or(Price{0}).ticks()));
+    write_u32(bytes, 108U, book.last_execution_price_.has_value() ? 1U : 0U);
     for (std::uint32_t index = 0; index < book.arena_.capacity_; ++index) {
       const auto& slot = book.arena_.slots_[index];
       const std::size_t offset =
@@ -259,6 +262,12 @@ public:
         write_u64(bytes, offset + 48U, book.trader_ids_[index].value());
         write_u64(bytes, offset + 56U, book.display_quantities_[index]);
         write_u64(bytes, offset + 64U, book.displayed_remaining_[index]);
+        write_u64(bytes, offset + 72U,
+            static_cast<std::uint64_t>(book.stop_trigger_prices_[index]));
+        write_u64(bytes, offset + 80U,
+            static_cast<std::uint64_t>(book.stop_limit_prices_[index]));
+        write_u32(bytes, offset + 88U, book.stop_prev_indices_[index]);
+        write_u32(bytes, offset + 92U, book.stop_next_indices_[index]);
       }
     }
     write_u32(bytes, kChecksumOffset, snapshot_crc(bytes));
@@ -275,15 +284,21 @@ public:
       }
     }
     const std::uint32_t version = read_u32(bytes, 8U);
-    if (version != 1U && version != 2U && version != kSnapshotFormatVersion) {
+    if (version != 1U && version != 2U && version != 3U &&
+      version != kSnapshotFormatVersion) {
       return std::unexpected{SnapshotError::unsupported_version};
     }
-    const std::size_t slot_size = version == 1U ? 48U : (version == 2U ? 56U : kSnapshotSlotSize);
+    const std::size_t slot_size = version == 1U ? 48U : (version == 2U ? 56U :
+                     (version == 3U ? 72U : kSnapshotSlotSize));
     const std::uint32_t self_trade_policy = read_u32(bytes, 20U);
     if (read_u32(bytes, 12U) != kSnapshotHeaderSize || read_u32(bytes, 16U) != slot_size ||
         (version == 1U && self_trade_policy != 0U) ||
         (version >= 2U && self_trade_policy > static_cast<std::uint32_t>(SelfTradePolicy::cancel_taker)) ||
-        !zero(bytes.subspan(kHeaderReservedOffset, kSnapshotHeaderSize - kHeaderReservedOffset))) {
+        (version < 4U &&
+         !zero(bytes.subspan(kHeaderReservedOffset, kSnapshotHeaderSize - kHeaderReservedOffset))) ||
+        (version == 4U &&
+         (read_u32(bytes, 108U) > 1U ||
+          (read_u32(bytes, 108U) == 0U && read_u64(bytes, 100U) != 0U)))) {
       return std::unexpected{SnapshotError::invalid_header};
     }
     const std::uint32_t capacity = read_u32(bytes, 48U);
@@ -330,6 +345,9 @@ public:
           static_cast<SelfTradePolicy>(self_trade_policy));
       engine->sequence_exhausted_ = exhausted == 1U;
       OrderBook& book = engine->order_book_;
+      if (version == 4U && read_u32(bytes, 108U) == 1U) {
+        book.last_execution_price_ = Price{static_cast<std::int64_t>(read_u64(bytes, 100U))};
+      }
       book.arena_.size_ = live_count;
       book.arena_.free_head_ = read_u32(bytes, 56U);
       std::uint32_t observed_live{};
@@ -371,6 +389,44 @@ public:
           version < 3U ? slot.order.remaining.value() : read_u64(bytes, offset + 56U);
         book.displayed_remaining_[index] =
           version < 3U ? slot.order.remaining.value() : read_u64(bytes, offset + 64U);
+        book.stop_trigger_prices_[index] =
+            version < 4U ? 0 : static_cast<std::int64_t>(read_u64(bytes, offset + 72U));
+        book.stop_limit_prices_[index] =
+            version < 4U ? 0 : static_cast<std::int64_t>(read_u64(bytes, offset + 80U));
+        book.stop_prev_indices_[index] = version < 4U ? 0U : read_u32(bytes, offset + 88U);
+        book.stop_next_indices_[index] = version < 4U ? 0U : read_u32(bytes, offset + 92U);
+        const bool dormant = (slot.order.reserved_flags & kOrderFlagDormantStop) != 0U;
+        if (dormant) {
+          const bool market = (slot.order.reserved_flags & kOrderFlagStopMarket) != 0U;
+          if (version < 4U ||
+              (slot.order.reserved_flags & ~(kOrderFlagDormantStop | kOrderFlagStopMarket)) != 0U ||
+              slot.order.remaining.value() == 0U || slot.order.remaining.value() > max_quantity ||
+              slot.order.prev_index != kInvalidIndex || slot.order.next_index != kInvalidIndex ||
+              detail::decode_level(slot.order.encoded_level_side) != 0U ||
+              book.trader_ids_[index] != TraderId{0U} || book.display_quantities_[index] != 0U ||
+              book.displayed_remaining_[index] != 0U ||
+              (market && book.stop_limit_prices_[index] != 0) ||
+              (book.stop_prev_indices_[index] != kInvalidIndex &&
+               book.stop_prev_indices_[index] >= capacity) ||
+              (book.stop_next_indices_[index] != kInvalidIndex &&
+               book.stop_next_indices_[index] >= capacity)) {
+            return std::unexpected{SnapshotError::invalid_order};
+          }
+          if (book.stop_prev_indices_[index] == kInvalidIndex) {
+            if (book.stop_head_ != kInvalidIndex) {
+              return std::unexpected{SnapshotError::invalid_order_graph};
+            }
+            book.stop_head_ = index;
+          }
+          if (book.stop_next_indices_[index] == kInvalidIndex) {
+            if (book.stop_tail_ != kInvalidIndex) {
+              return std::unexpected{SnapshotError::invalid_order_graph};
+            }
+            book.stop_tail_ = index;
+          }
+          ++book.dormant_stop_count_;
+          continue;
+        }
         const std::uint32_t level = detail::decode_level(slot.order.encoded_level_side);
         if (slot.order.remaining.value() == 0U || slot.order.remaining.value() > max_quantity ||
           book.display_quantities_[index] == 0U ||
@@ -378,6 +434,9 @@ public:
           book.displayed_remaining_[index] > book.display_quantities_[index] ||
           book.displayed_remaining_[index] > slot.order.remaining.value() ||
             level >= tick_count || slot.order.reserved_flags != 0U ||
+            (version >= 4U &&
+             (book.stop_trigger_prices_[index] != 0 || book.stop_limit_prices_[index] != 0 ||
+              book.stop_prev_indices_[index] != 0U || book.stop_next_indices_[index] != 0U)) ||
             (slot.order.prev_index != kInvalidIndex && slot.order.prev_index >= capacity) ||
             (slot.order.next_index != kInvalidIndex && slot.order.next_index >= capacity)) {
           return std::unexpected{
