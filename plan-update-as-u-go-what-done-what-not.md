@@ -19,22 +19,15 @@ Last updated: 2026-08-29.
 - Phase 4 is complete: every advanced semantic has production, independent-reference, differential, invariant, replay, snapshot, fuzz, protocol, and ADR coverage.
 - Phase 5 journal rotation, base-sequence semantics, multi-segment recovery, snapshot-driven compaction, crash recovery, and operator guidance are merged.
 - Phase 5 is complete in PRs #40, #41, and #42; final recovery operations merged at `9a20576`.
+- Phase 6 strict configuration, lifecycle, graceful drain, health reporting, reliability coverage, API compatibility, packaging, threat modeling, and resource boundaries are merged.
+- Phase 6 is complete in PRs #44, #45, #46, and #47; final package and security boundaries merged at `e88c9a5`.
 
 ### In progress
 
-- Phase 6 strict runtime configuration and API compatibility are implemented on `feat/runtime-config`.
-- PR #44 merged strict runtime configuration and API compatibility at `b16d4b2`.
-- Runtime lifecycle, graceful shutdown, health-state escalation, bounded counters, and off-hot-path structured reporting are implemented on `feat/runtime-operations`.
-- PR #45 merged runtime lifecycle, health, graceful shutdown, and structured reporting at `b03c337`.
-- Deterministic status fault schedules and a 100,000-cycle control-plane soak are implemented on `test/runtime-reliability`.
-- PR #46 merged deterministic fault schedules and soak coverage at `a7f9068`.
-- CMake install/export/package targets, external consumer compatibility tests, threat modeling, resource limits, and corrected scope documentation are implemented on `feat/package-security-boundaries`.
-- Phase 6 implementation is complete locally: strict config, lifecycle, graceful drain, structured reporting, health states, deterministic fault injection, soak coverage, API compatibility, install/export/package targets, threat model, and resource-limit documentation are present.
-- The final Phase 6 branch passes 297 of 297 debug tests, including installed-package consumer compilation, and builds binary and source TGZ packages.
+- Phase 7 measured optimization and Phase 8 host qualification are next.
 
 ### Not started
 
-- Phase 6 needs final package/security PR integration, green CI, and branch deletion.
 - Phases 7, 8, 9, and 10 are not started.
 
 ## Detailed execution history
@@ -79,6 +72,10 @@ Last updated: 2026-08-29.
 - Implemented: standard CMake install and exported targets, package config and version files, replay executable installation, CPack binary and source TGZ generation, and an external installed-package consumer test.
 - Documented: runtime configuration, operations, reliability testing, packaging, threat model, resource limits, and explicit exclusions for authentication, authorization, cryptographic integrity, replication, regulation, and real-money use.
 - Verified: the final Phase 6 branch passes 297 of 297 debug tests and generates both binary and source packages.
+- Done: PR #47 merged install/export/package targets, external consumer verification, threat modeling, resource limits, and corrected operational scope into `main` at `e88c9a5`; all seven CI jobs passed after excluding the uninstrumented external consumer from sanitizer catalogs.
+- Verified after merge: the installed-package consumer compiles and links from a separate CMake project on `main`.
+- Phase 6 is complete.
+- Next: begin the measured optimization campaign and free-host qualification without publishing unqualified latency claims.
 
 - Done: `develop` now exists on `origin` from current `main`.
 - Done: local identity hooks require Divyanshu's personal commit identity and the approved GitHub account.

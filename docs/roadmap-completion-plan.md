@@ -154,7 +154,9 @@ Deterministic public-status fault schedules and a 100,000-cycle control-plane so
 PR #46 merged that concern at `a7f9068`; all seven CI jobs passed.
 CMake install/export/package targets, an external installed-package consumer test, threat modeling, resource limits, and corrected scope documentation are implemented on `feat/package-security-boundaries`.
 The final Phase 6 branch passes 297 of 297 debug tests, including installed-package consumer compilation, and generates binary and source TGZ packages.
-Every Phase 6 implementation requirement is complete locally; only final PR integration, green CI, and branch deletion remain.
+PR #47 merged the final concern at `e88c9a5`; all seven CI jobs passed after the external uninstrumented consumer test was limited to non-sanitizer builds.
+Post-merge installed-package consumer verification passes on `main`.
+Phase 6 completed on 2026-08-29 in PRs #44, #45, #46, and #47.
 
 ### Phase 7: measured optimization
 
