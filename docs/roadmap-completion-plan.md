@@ -166,6 +166,10 @@ Record accepted and rejected hypotheses with retained artifacts.
 Do not remove validation to improve a benchmark.
 
 An equivalent regression-only price-index comparison harness for ladder plus bitmap, `std::map`, sorted vector, and pinned Abseil `btree_map` is implemented on `feat/benchmark-alternatives`.
+PR #49 merged that harness at `36a024c`; all seven CI jobs passed.
+A retained Darwin arm64 regression-only campaign compares 64, 4,096, and 65,536 active levels and runs both full-engine scenarios through 1M requested events per second.
+The ladder leads every isolated comparison, so no production index change is justified.
+The live host report is explicitly nonqualified and every operation-latency point is below resolution.
 
 ### Phase 8: free-host qualification and artifacts
 
@@ -175,6 +179,9 @@ Do not present their latency as qualified.
 Borrowed physical x86 Linux, a university resource, or a verified OSS bare-metal program is preferred for publishable evidence.
 Capture qualification, topology, frequency policy, multiple repetitions, load sweeps, and all benchmark scopes.
 Require an independent second run before publication.
+
+The current live macOS arm64 report is retained with `qualified: false`.
+No qualified latency number exists, and no Mac or CI latency will be published.
 
 ### Phase 9: evidence-driven README
 
