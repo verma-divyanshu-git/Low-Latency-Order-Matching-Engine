@@ -89,7 +89,14 @@ A sequence-zero boundary requires logical time zero, engine next sequence 1, las
 A normal boundary `S` requires engine next sequence `S + 1`, engine last logical time equal to the boundary time, and a non-exhausted sequencer.
 The retained journal must contain command `S`, and the first suffix command, if present, must equal the engine next sequence.
 Terminal snapshots at `UINT64_MAX` preserve their exhausted sequencer state when loaded, but the replay helper and current CLI reject them as an unverifiable boundary because the sequence-1 journal format cannot retain enough records to prove that boundary.
-Journal compaction, suffix-only journals, and rotation are not implemented yet.
+Rotated recovery discovers canonical base-named segments, sorts them by base sequence, and validates the complete chain before applying any command.
+It rejects malformed matching names, header/name disagreement, overlap, gaps, corruption, and partial non-final segments.
+A compacted journal may begin at the command immediately after the durable snapshot boundary.
+
+Snapshot-driven compaction deletes only whole segments fully covered by a validated durable snapshot.
+If the snapshot covers all segments, compaction creates an empty successor at the next sequence before deleting the covered files.
+It synchronizes the parent directory after deletion.
+Compaction requires closed writers and never treats CRC32C as authentication.
 
 Every replayed event is encoded into a canonical 64-byte little-endian record.
 The streaming fingerprint reports CRC32C plus event and byte counts.

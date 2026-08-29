@@ -91,6 +91,11 @@ It validates the next command before rotation.
 When a segment is full, it closes that segment before exclusively creating the successor at the next required sequence.
 It never overwrites an existing segment.
 Old segments remain until snapshot-driven compaction proves they are obsolete.
+
+Recovery sorts canonical segment names by base sequence and validates every segment before replay.
+It rejects overlaps, gaps, corruption, and partial non-final segments.
+Compaction loads the durable snapshot first and removes only whole segments covered by its sequence boundary.
+When every segment is covered, an empty successor at the next sequence is made durable before prefix deletion.
 This implementation does not perform component-by-component `openat` traversal, so directory permissions remain required to constrain concurrent replacement during that initial resolution.
 The implementation supports macOS and Linux.
 

@@ -31,3 +31,4 @@ A new record supersedes a decision when the architecture changes.
 - [ADR-0022: Threshold pro-rata with FIFO residue](0022-threshold-pro-rata-with-fifo-residue.md)
 - [ADR-0023: Opening-cross auction](0023-opening-cross-auction.md)
 - [ADR-0024: Journal rotation and base sequences](0024-journal-rotation-and-base-sequences.md)
+- [ADR-0025: Snapshot-driven journal compaction](0025-snapshot-driven-journal-compaction.md)

@@ -5,6 +5,7 @@
 #include "matching_engine/market_data_adapter.hpp"
 #include "matching_engine/market_data_input.hpp"
 #include "matching_engine/sequenced_engine.hpp"
+#include "matching_engine/snapshot.hpp"
 
 #include <array>
 #include <cstddef>
@@ -74,9 +75,30 @@ enum class MarketDataReplayError : std::uint8_t {
   invariant,
 };
 
+enum class JournalCompactionError : std::uint8_t {
+  none,
+  snapshot,
+  journal_set,
+  snapshot_before_retained_history,
+  snapshot_ahead_of_journal,
+  io_error,
+  commit_indeterminate,
+};
+
+[[nodiscard]] const char* journal_compaction_error_message(JournalCompactionError error) noexcept;
+
 [[nodiscard]] std::expected<ReplayResult, ReplayError>
 replay_journal(MmapJournal& journal, SequencedEngine& engine, Sequence snapshot_sequence,
                std::uint64_t snapshot_logical_time, std::span<EngineEvent> event_buffer) noexcept;
+
+[[nodiscard]] std::expected<ReplayResult, ReplayError>
+replay_journal_segments(JournalSegmentSet& journals, SequencedEngine& engine,
+                        Sequence snapshot_sequence, std::uint64_t snapshot_logical_time,
+                        std::span<EngineEvent> event_buffer) noexcept;
+
+[[nodiscard]] JournalCompactionError
+compact_journal_segments(const std::filesystem::path& path_prefix,
+                         const std::filesystem::path& durable_snapshot_path) noexcept;
 
 [[nodiscard]] std::expected<ReplayResult, MarketDataReplayError>
 replay_market_data(MarketDataInputStream& input, MarketDataAdapter& adapter, SequencedEngine& engine,

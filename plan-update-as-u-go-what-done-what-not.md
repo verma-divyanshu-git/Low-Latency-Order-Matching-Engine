@@ -21,12 +21,12 @@ Last updated: 2026-08-29.
 ### In progress
 
 - Phase 5 journal format v2 base-sequence semantics and bounded deterministic rotation are implemented on `feat/journal-rotation`.
-- The focused journal v2 and rotation suite passes 5 of 5 tests.
+- PR #40 merged journal v2 base-sequence semantics and deterministic rotation at `323fb1a`.
+- Snapshot-driven whole-segment compaction, validated segment discovery, and deterministic multi-segment replay are implemented on `feat/snapshot-journal-compaction`.
+- Focused coverage passes 5 segment-set tests, 3 compacted replay tests, and 3 compaction tests.
 
 ### Not started
 
-- Phase 5 still needs snapshot-driven journal compaction.
-- Phase 5 still needs deterministic recovery across rotated segments without skipping committed corruption or sequence gaps.
 - Phase 5 still needs crash-point tests for rotation, rename, truncation, and compaction.
 - Phase 5 still needs a recovery runbook and explicit CRC32C accidental-corruption-only guidance.
 - Phases 6, 7, 8, 9, and 10 are not started because Phases 4 and 5 have not converged.
@@ -51,6 +51,11 @@ Last updated: 2026-08-29.
 - Next: implement Phase 5 persistence operations one concern at a time.
 - Implemented: journal v2 stores an explicit base sequence, preserves v1 compatibility, rejects sequence-range overflow, and rotates to deterministic base-named segments without overwriting existing files.
 - Verified: all 5 focused journal v2 and rotation regressions pass.
+- Done: PR #40 merged journal rotation and base-sequence semantics into `main` at `323fb1a`; all seven CI jobs passed and the feature branch was deleted.
+- Implemented: canonical segment discovery rejects malformed names, overlap, gaps, corruption, and partial non-final segments before replay.
+- Implemented: replay accepts a compacted first segment only at `snapshot_sequence + 1`, traverses contiguous rotated segments, and rejects missing suffix commands.
+- Implemented: snapshot-driven compaction deletes only covered whole segments and creates a durable empty successor when the snapshot covers the full journal.
+- Verified: all 11 focused segment discovery, compacted replay, and compaction tests pass.
 
 - Done: `develop` now exists on `origin` from current `main`.
 - Done: local identity hooks require Divyanshu's personal commit identity and the approved GitHub account.
