@@ -88,6 +88,7 @@ The [snapshot and replay guide](docs/snapshots-and-replay.md) specifies snapshot
 The [persistence recovery runbook](docs/recovery-runbook.md) specifies crash recovery, rotated replay, writer resume, and compaction handling.
 The [runtime configuration guide](docs/runtime-configuration.md) specifies strict startup fields, resource relationships, and API compatibility.
 The [runtime operations guide](docs/operations.md) specifies lifecycle, graceful drain, health states, and structured reporting.
+The [reliability testing guide](docs/reliability-testing.md) specifies deterministic fault schedules, soak coverage, and model limits.
 The [pipeline guide](docs/pipeline.md) specifies SPSC memory ordering, stage ownership, backpressure, poisoning, snapshots, shutdown, and benchmark interpretation.
 
 ## Benchmark contract

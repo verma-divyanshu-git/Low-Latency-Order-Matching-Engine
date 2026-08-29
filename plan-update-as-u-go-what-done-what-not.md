@@ -25,7 +25,9 @@ Last updated: 2026-08-29.
 - Phase 6 strict runtime configuration and API compatibility are implemented on `feat/runtime-config`.
 - PR #44 merged strict runtime configuration and API compatibility at `b16d4b2`.
 - Runtime lifecycle, graceful shutdown, health-state escalation, bounded counters, and off-hot-path structured reporting are implemented on `feat/runtime-operations`.
-- Focused lifecycle and health coverage passes 4 of 4 tests.
+- PR #45 merged runtime lifecycle, health, graceful shutdown, and structured reporting at `b03c337`.
+- Deterministic status fault schedules and a 100,000-cycle control-plane soak are implemented on `test/runtime-reliability`.
+- Focused reliability coverage passes 3 of 3 tests.
 
 ### Not started
 

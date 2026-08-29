@@ -206,6 +206,7 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
     tests/pipeline_test.cpp
     tests/runtime_config_test.cpp
     tests/runtime_operations_test.cpp
+    tests/runtime_reliability_test.cpp
     tests/snapshot_replay_test.cpp)
   target_compile_definitions(
     matching_engine_persistence_tests PRIVATE MATCHING_ENGINE_TEST_FAILPOINTS)
