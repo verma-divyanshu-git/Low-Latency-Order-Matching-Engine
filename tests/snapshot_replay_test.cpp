@@ -913,6 +913,7 @@ TEST(JournalCompactionTest, DeletesCoveredPrefixAndReplaysRetainedSuffix) {
   ASSERT_EQ(rotating->close(), JournalError::none);
 
   ASSERT_EQ(compact_journal_segments(prefix, snapshot_path), JournalCompactionError::none);
+  ASSERT_EQ(compact_journal_segments(prefix, snapshot_path), JournalCompactionError::none);
   auto segments = JournalSegmentSet::open(prefix);
   auto restored = load_snapshot(snapshot_path);
   ASSERT_TRUE(segments.has_value());
@@ -948,6 +949,7 @@ TEST(JournalCompactionTest, CreatesEmptySuccessorWhenSnapshotCoversAllSegments) 
   ASSERT_EQ(save_snapshot_atomic(snapshot_path, live, SnapshotPoint{Sequence{2U}, 2U}),
             SnapshotError::none);
 
+  ASSERT_EQ(compact_journal_segments(prefix, snapshot_path), JournalCompactionError::none);
   ASSERT_EQ(compact_journal_segments(prefix, snapshot_path), JournalCompactionError::none);
   auto segments = JournalSegmentSet::open(prefix);
   ASSERT_TRUE(segments.has_value());

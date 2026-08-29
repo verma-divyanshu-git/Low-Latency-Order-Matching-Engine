@@ -347,7 +347,7 @@ compact_journal_segments(const std::filesystem::path& path_prefix,
   while (obsolete_count < journals->size()) {
     const MmapJournal& segment = journals->segment(obsolete_count);
     const std::uint64_t segment_end = segment.base_sequence().value() + segment.size();
-    if (segment_end > snapshot_next) {
+    if (segment.size() == 0U || segment_end > snapshot_next) {
       break;
     }
     ++obsolete_count;
