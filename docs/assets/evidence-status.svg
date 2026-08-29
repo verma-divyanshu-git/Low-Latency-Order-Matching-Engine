@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="300" viewBox="0 0 960 300">
+  <title>Performance evidence status</title>
+  <desc>Regression evidence is retained while qualified latency remains unavailable.</desc>
+  <style>
+      .bg { fill: #f7f7f4; }
+      .panel { fill: #ffffff; stroke: #253238; stroke-width: 2; }
+      .durable { fill: #e7f2ea; stroke: #176b45; stroke-width: 2; }
+      .warning { fill: #fff3d6; stroke: #9a6500; stroke-width: 2; }
+      .title { font: 700 22px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #172126; }
+      .label { font: 700 15px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #172126; }
+      .small { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #425157; }
+      .arrow { stroke: #253238; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    </style>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#253238" />
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="960" height="300" class="bg" />
+  <text x="40" y="45" class="title">EVIDENCE STATUS</text>
+  <rect x="40" y="57" width="880" height="48" rx="6" class="durable" />
+  <text x="62" y="85" class="label">Correctness</text>
+  <text x="245" y="85" class="small">debug, sanitizer, differential, replay</text>
+  <rect x="40" y="117" width="880" height="48" rx="6" class="durable" />
+  <text x="62" y="145" class="label">Throughput</text>
+  <text x="245" y="145" class="small">same-host regression artifacts retained</text>
+  <rect x="40" y="177" width="880" height="48" rx="6" class="warning" />
+  <text x="62" y="205" class="label">Latency</text>
+  <text x="245" y="205" class="small">not publishable: host unqualified + below resolution</text>
+  <text x="40" y="275" class="small">Darwin arm64 report: qualified=false</text>
+</svg>

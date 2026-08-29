@@ -194,6 +194,9 @@ Make regression-only results visually distinct.
 Link every headline value to its artifact manifest and reproduction command.
 Add an honest design-alternatives section.
 
+The evidence-driven README, deterministic technical SVG generator, artifact links, reproduction links, and design-alternatives section are implemented on `docs/evidence-readme`.
+No qualified latency or resume claim is included.
+
 ### Phase 10: release gate
 
 Require green CI and presets, deterministic snapshot-plus-journal replay, correct identity, a clean repository, complete artifacts, no paid or card-required infrastructure, and no unsupported claims.

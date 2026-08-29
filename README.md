@@ -4,46 +4,48 @@ An open-source C++23 project for studying a small, deterministic, mechanically s
 
 The thesis is that predictable ownership, bounded work, explicit sequencing, and measurement discipline matter more on the hot path than a large framework stack.
 
-## Status
+## Current state
 
-Phase 1 now includes strong price, quantity, identifier, sequence, side, and handle domain types.
-It also includes a fixed-capacity order arena with generation-checked handles and separate hot-order and arena metadata storage.
-Prices can be mapped into a validated bounded tick domain, and a fixed hierarchical bitmap tracks populated level indexes.
-A single-writer, fixed-capacity order book now matches GTC, IOC, FOK, and market orders with price-time priority, maker-price executions, caller-owned trade output, and no allocation after construction.
-Generation-checked cancellation, priority-preserving quantity decreases, and priority-losing cancel-replacement are implemented.
-Phase 2A adds an explicit allocation-free structural invariant checker for tests, deterministic replay verification, and debug tooling.
-The checker validates redundant level, occupancy, linked-list, arena-liveness, aggregate, reachability, and uncrossed-book representations without running on release order operations.
-Phase 2B adds generation-validated live order inspection and an independent standard-library reference book.
-Ten fixed seeds exercise 10,000 normal differential operations, with additional labeled high-cancel and volatility-shock synthetic stress workloads.
-Structure-aware libFuzzer testing compares bounded public-operation sequences with that reference model and checks structural invariants after every operation.
-This increases defensive test coverage but does not prove correctness or imply that fuzzing has discovered a bug.
-Phase 3A adds a benchmark-only portable clock library and startup self-check that can refuse unresolved measurements.
-Phase 3B adds a benchmark-only open-loop order-book harness, atomic raw HdrHistogram artifact sets with explicit resolution refusal fields, explicit rate sweeps, and a bounded separate synthetic coordinated-omission diagnostic.
-Phase 3C adds report-only Linux host qualification and a separate batch-amortized noisy-CI throughput regression gate with no latency claims.
-Phase 4A adds canonical fixed command bytes, caller-clocked sequencing, deterministic fixed event output, and a separate fixed-capacity memory-mapped command journal for macOS and Linux.
-Recovery detects torn or corrupt committed records and replays decoded command values without exposing mapping pointers.
-Phase 4B adds versioned canonical engine snapshots, atomic replacement persistence, exact journal-boundary recovery, canonical event encoding, and a standalone deterministic replay verifier.
-Snapshots and replay fingerprints have CRC32C corruption detection but no cryptographic authentication.
-Phase 5A adds an exact-capacity allocation-free SPSC queue and non-thread-owning durable ingress, single-writer matching, and ordered publication stages.
-Ingress appends before publication, matching preflights complete event-batch capacity before mutation, and persistence or sequence uncertainty poisons the affected stage.
-Journal rotation, compaction, and multi-segment recovery are implemented; replication remains unimplemented.
-Steady-clock fallback can pass clock safety for local regression use but is always marked non-publishable.
-No latency or throughput claims should be inferred from this repository.
+The engine provides a fixed-capacity, single-writer order book with generation-checked handles, bounded integer prices, hierarchical price-level occupancy, caller-owned output, and no matching-path allocation after construction.
+Supported semantics include GTC, IOC, FOK, market, post-only, trader-based self-trade prevention, iceberg replenishment, stop and stop-limit orders, threshold pro-rata allocation, and an opening cross.
+
+The operational path includes gateway validation, deterministic lane merge, canonical command and market-data protocols, BBO, MBO, and MBP publication, bounded SPSC stages, strict runtime configuration, lifecycle and health reporting, mmap journals, rotation, snapshots, compaction, and deterministic multi-segment replay.
+Correctness coverage includes an independent reference book, differential simulation, structural invariants, decoder and operation fuzzing, sanitizer jobs, deterministic fault schedules, crash-window tests, and soak tests.
+
+This remains experimental software.
+It is not a deployed exchange service and does not provide networking, authentication, authorization, cryptographic file authentication, replication, regulatory controls, or real-money safeguards.
 
 ## Pipeline architecture
 
-```mermaid
-flowchart LR
-  I[Durable ingress] -->|SequencedCommand SPSC| M[Single-writer matching]
-  M -->|EngineEvent SPSC| P[Ordered publication]
-  I --> J[Mmap journal]
-```
+![Generated diagram of the deterministic durable pipeline](docs/assets/architecture.svg)
 
 Stages do not own threads or waiting policy.
 Production code can pin externally owned threads, while deterministic tests control scheduling directly.
-Additional producer lanes and deterministic merge remain future work.
+Commands become visible to matching only after durable append, and complete event batches become visible to publication before input release.
 
-## Design direction
+## Evidence status
+
+![Generated evidence status showing qualified and refused claims](docs/assets/evidence-status.svg)
+
+The retained [optimization campaign](docs/optimization-campaign.md) compares equivalent price-level indexes and runs full-engine rate sweeps.
+All campaign artifacts are explicitly `regression_only`.
+The live Darwin arm64 [host report](benchmark-results/phase7-host/mac-arm64.json) is `qualified: false`, and every measured operation is below the harness resolution threshold.
+No latency number from the Mac or CI is published or suitable for a resume.
+
+The [artifact manifest](benchmark-results/phase7-comparison/manifest.json) links the source revision, compiler, platform, comparison files, full-engine sweeps, and host report.
+Reproduction commands are recorded in the [campaign document](docs/optimization-campaign.md).
+
+## Design alternatives
+
+The production price index remains the dense ladder plus hierarchical bitmap.
+Under the retained equivalent workload it led `std::map`, a reserved sorted vector, and pinned Abseil `btree_map` at all three tested active-level sizes with identical checksums.
+That result does not claim full-engine latency, but it provides no evidence for replacing the production structure.
+
+Branch hints, transparent huge pages, PGO, and BOLT were not adopted.
+They require reproducible qualified full-engine evidence, not a plausible compiler story or one noisy local result.
+The detailed decision and rejected hypotheses are in the [comparison guide](docs/benchmark-alternatives.md) and [campaign findings](docs/optimization-campaign.md).
+
+## Design principles
 
 C++23 is the language baseline because this project targets explicit data layout, ownership, allocation, and compile-time constraints while using current standard-library facilities.
 The runtime engine is intended to remain dependency-free.
@@ -91,19 +93,11 @@ The [runtime operations guide](docs/operations.md) specifies lifecycle, graceful
 The [reliability testing guide](docs/reliability-testing.md) specifies deterministic fault schedules, soak coverage, and model limits.
 The [pipeline guide](docs/pipeline.md) specifies SPSC memory ordering, stage ownership, backpressure, poisoning, snapshots, shutdown, and benchmark interpretation.
 
-## Benchmark contract
+## Measurement contract
 
-Future benchmark reports will:
-
-- Publish the exact commit, compiler, flags, hardware, operating system, CPU topology, and relevant firmware or power settings.
-- Separate throughput tests from latency tests.
-- Report latency distributions and tail percentiles instead of averages alone.
-- Include warm-up policy, sample count, run duration, queue depth, workload mix, and message distribution.
-- State whether allocation, parsing, transport, persistence, logging, and validation are inside or outside the measured interval.
-- Use monotonic timing, disclose clock source and calibration, and account for measurement overhead.
-- Pin threads and disclose isolation, affinity, frequency scaling, simultaneous multithreading, and NUMA policy where applicable.
-- Preserve raw data and scripts needed to reproduce published results.
-- Avoid comparisons unless competing systems are measured under an equivalent contract.
+Benchmark artifacts disclose source revision, compiler, hardware, operating system, workload, sample count, warmup, requested rate, completion rate, clock qualification, and operation resolution.
+Latency publication requires both a qualified clock and a qualified host report from the same candidate run.
+Shared CI and the current Mac are regression environments only.
 
 ## Limitations and non-goals
 

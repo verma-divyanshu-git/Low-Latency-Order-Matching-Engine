@@ -28,10 +28,11 @@ Last updated: 2026-08-29.
 
 - Phase 8 host qualification remains open.
 - The current free no-card host attempt is a retained live Darwin arm64 report with `qualified: false`; no CI or Mac latency claim will be published.
+- Phase 9 evidence-driven README work is implemented on `docs/evidence-readme` with generated technical SVGs, manifest-linked regression evidence, reproduction commands, and design alternatives.
 
 ### Not started
 
-- Phases 9 and 10 are not started.
+- Phase 10 is not started.
 
 ## Detailed execution history
 
