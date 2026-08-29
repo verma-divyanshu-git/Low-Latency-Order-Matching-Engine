@@ -23,7 +23,9 @@ Last updated: 2026-08-29.
 ### In progress
 
 - Phase 6 strict runtime configuration and API compatibility are implemented on `feat/runtime-config`.
-- Focused config and compatibility coverage passes 6 of 6 tests.
+- PR #44 merged strict runtime configuration and API compatibility at `b16d4b2`.
+- Runtime lifecycle, graceful shutdown, health-state escalation, bounded counters, and off-hot-path structured reporting are implemented on `feat/runtime-operations`.
+- Focused lifecycle and health coverage passes 4 of 4 tests.
 
 ### Not started
 
