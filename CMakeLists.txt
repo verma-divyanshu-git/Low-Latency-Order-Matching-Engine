@@ -286,6 +286,10 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
   add_dependencies(matching_engine_replay_cli_tests matching_engine_replay)
   engine_configure_target(matching_engine_replay_cli_tests)
   gtest_discover_tests(matching_engine_replay_cli_tests)
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_test(
+    NAME phase7_artifact_contract_test
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_phase7_artifacts.py)
   if(NOT ENGINE_ENABLE_ASAN AND NOT ENGINE_ENABLE_UBSAN AND NOT ENGINE_ENABLE_TSAN
      AND NOT ENGINE_ENABLE_FUZZING)
     add_test(

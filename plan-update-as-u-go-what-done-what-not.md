@@ -26,10 +26,14 @@ Last updated: 2026-08-29.
 
 - Phase 7 equivalent price-index comparison harness is implemented on `feat/benchmark-alternatives`.
 - The harness compares ladder plus bitmap, `std::map`, sorted vector, and pinned Abseil `btree_map` with identical operations and checksum validation.
+- PR #49 merged the comparison harness at `36a024c`.
+- The regression-only campaign retains comparison artifacts at 64, 4,096, and 65,536 active levels, crossing and three-level rate sweeps through 1M requested events per second, and a live Darwin arm64 nonqualification report.
+- The ladder leads every isolated comparison; no production hot-path change is justified.
+- Phase 8 has no qualified latency result because the current Mac report is explicitly `qualified: false`; no CI or Mac latency claim will be published.
 
 ### Not started
 
-- Phases 7, 8, 9, and 10 are not started.
+- Phases 9 and 10 are not started.
 
 ## Detailed execution history
 
@@ -77,6 +81,11 @@ Last updated: 2026-08-29.
 - Verified after merge: the installed-package consumer compiles and links from a separate CMake project on `main`.
 - Phase 6 is complete.
 - Next: begin the measured optimization campaign and free-host qualification without publishing unqualified latency claims.
+- Done: PR #49 merged the equivalent benchmark harness into `main` at `36a024c`; all seven CI jobs passed.
+- Measured: ladder plus bitmap leads `std::map`, sorted vector, and Abseil B-tree at all three tested active-level sizes with identical checksums.
+- Rejected: replacing the ladder, adding branch hints, enabling huge pages, or adding PGO/BOLT without qualified full-engine evidence.
+- Captured: both full-engine scenarios at six requested rates and a live macOS arm64 host report.
+- Qualification result: `qualified: false`; every artifact remains regression-only and operation latency remains below measurement resolution.
 
 - Done: `develop` now exists on `origin` from current `main`.
 - Done: local identity hooks require Divyanshu's personal commit identity and the approved GitHub account.
