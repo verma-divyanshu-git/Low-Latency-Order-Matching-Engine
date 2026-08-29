@@ -186,6 +186,9 @@ Require an independent second run before publication.
 The current live macOS arm64 report is retained with `qualified: false`.
 No qualified latency number exists, and no Mac or CI latency will be published.
 Phase 8 remains open until a genuinely qualifiable free x86 Linux host is available.
+The retained fallback campaign reports a measured 75.3-77.2M batch-operations/s range across two independent median-of-21 runs on a dedicated Apple M4 Pro.
+Both full-engine scenarios tracked offered rates through 2M events/s with zero invalid samples.
+The fallback evidence remains regression-only and does not estimate hypothetical x86 performance.
 
 ### Phase 9: evidence-driven README
 

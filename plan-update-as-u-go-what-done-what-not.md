@@ -30,6 +30,8 @@ Last updated: 2026-08-29.
 
 - Phase 8 host qualification remains open.
 - The current free no-card host attempt is a retained live Darwin arm64 report with `qualified: false`; no CI or Mac latency claim will be published.
+- The best available fallback campaign on a dedicated Apple M4 Pro measured two independent median batch-throughput runs at 77.22M and 75.33M operations/s, a 2.48% difference.
+- Both 100,000-event full-engine scenarios tracked requested offered rates through 2M events/s with zero invalid samples; these are regression-only throughput results, not latency or a saturation ceiling.
 - Final release tagging remains blocked by Phase 8 only.
 
 ### Not started
@@ -98,6 +100,7 @@ Last updated: 2026-08-29.
 - Verified on clean `main`: approved identity, synchronized `origin/main`, clean worktree, retained evidence contracts, and exact local and remote branch policy pass.
 - Release report status remains `phase8_host_qualified: false`, `latency_publishable: false`, and `tagging_blocked_by_phase8: true`.
 - All work that does not require a qualified Phase 8 host is complete.
+- Captured: dedicated M4 Pro fallback evidence with 42 one-million-operation batch repetitions, two large full-engine sweeps, hashes, manifest, and automated contract tests.
 
 - Done: `develop` now exists on `origin` from current `main`.
 - Done: local identity hooks require Divyanshu's personal commit identity and the approved GitHub account.

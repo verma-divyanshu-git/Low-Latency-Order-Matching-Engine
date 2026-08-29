@@ -291,6 +291,9 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
     NAME phase7_artifact_contract_test
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_phase7_artifacts.py)
   add_test(
+    NAME phase8_fallback_artifact_contract_test
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_phase8_fallback_artifacts.py)
+  add_test(
     NAME readme_asset_generation_test
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_generate_readme_assets.py)
   add_test(
