@@ -147,7 +147,9 @@ Add strict configuration parsing, startup and shutdown behavior, off-hot-path st
 Keep authentication, authorization, and real-money claims out of scope.
 
 Strict complete runtime configuration parsing, cross-field resource validation, and runtime API compatibility are implemented on `feat/runtime-config`.
-Focused coverage passes 6 of 6 tests.
+PR #44 merged that concern at `b16d4b2`; all seven CI jobs passed.
+Runtime lifecycle, graceful drain, health-state escalation, saturating counters, and fixed-schema off-hot-path reporting are implemented on `feat/runtime-operations`.
+Focused lifecycle and health coverage passes 4 of 4 tests.
 
 ### Phase 7: measured optimization
 
