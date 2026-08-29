@@ -203,6 +203,24 @@ public:
   }
 
   [[nodiscard]] ModelAmendResult amend_quantity(ModelToken token, Quantity new_remaining) {
+    const auto dormant = std::find_if(stops_.begin(), stops_.end(),
+                                      [token](const DormantStop& stop) {
+                                        return stop.token == token;
+                                      });
+    if (dormant != stops_.end()) {
+      const Quantity previous = dormant->quantity;
+      if (new_remaining.value() == 0U) {
+        return {AmendReason::zero_quantity, dormant->id, previous, new_remaining, token};
+      }
+      if (new_remaining.value() > max_order_quantity_) {
+        return {AmendReason::quantity_too_large, dormant->id, previous, new_remaining, token};
+      }
+      if (new_remaining > previous) {
+        return {AmendReason::increase_not_allowed, dormant->id, previous, new_remaining, token};
+      }
+      dormant->quantity = new_remaining;
+      return {AmendReason::none, dormant->id, previous, new_remaining, token};
+    }
     const auto location = locate(token);
     if (!location.has_value()) {
       return {AmendReason::invalid_handle, OrderId{0U}, Quantity{0U}, new_remaining,

@@ -163,6 +163,22 @@ TEST(OrderBookStopTest, StopsShareCapacityCancelSafelyAndReuseGeneration) {
   EXPECT_EQ(book.check_invariants().violation, InvariantViolation::none);
 }
 
+TEST(OrderBookStopTest, DormantStopQuantityCanOnlyDecrease) {
+  OrderBook book{PriceDomain{Price{0}, 201U}, 1U, Quantity{10U}};
+  std::array<Trade, 1U> trades{};
+  const Handle stop =
+      book.submit_stop(OrderId{1U}, Side::buy, Price{100}, Quantity{6U}, trades).resting_handle;
+
+  EXPECT_EQ(book.amend_quantity(stop, Quantity{0U}).reject_reason, AmendReason::zero_quantity);
+  EXPECT_EQ(book.amend_quantity(stop, Quantity{7U}).reject_reason,
+            AmendReason::increase_not_allowed);
+  EXPECT_EQ(book.amend_quantity(stop, Quantity{4U}),
+            (AmendResult{AmendReason::none, OrderId{1U}, Quantity{6U}, Quantity{4U}, stop}));
+  EXPECT_EQ(book.order_info(stop),
+            (OrderInfo{OrderId{1U}, Side::buy, Price{0}, Quantity{4U}}));
+  EXPECT_EQ(book.check_invariants().violation, InvariantViolation::none);
+}
+
 TEST(OrderBookStopTest, LastTradeDrivesImmediateAndDeterministicCascadeActivation) {
   OrderBook book{PriceDomain{Price{0}, 201U}, 8U, Quantity{50U}};
   std::array<Trade, 8U> trades{};

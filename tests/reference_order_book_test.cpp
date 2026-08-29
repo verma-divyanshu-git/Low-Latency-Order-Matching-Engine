@@ -162,5 +162,23 @@ TEST(ReferenceOrderBookTest, AllowsDifferentTradersUnderCancelTakerPolicy) {
     EXPECT_EQ(book.best_bid(), Price{98});
   }
 
+TEST(ReferenceOrderBookTest, DormantStopQuantityCanOnlyDecrease) {
+  ReferenceOrderBook book{Price{0}, 201U, 1U, Quantity{10U}};
+  const ModelToken stop =
+      *book.submit_stop(OrderId{1U}, Side::buy, Price{100}, Quantity{6U}, 1U).resting_token;
+
+  EXPECT_EQ(book.amend_quantity(stop, Quantity{0U}).reject_reason, AmendReason::zero_quantity);
+  EXPECT_EQ(book.amend_quantity(stop, Quantity{7U}).reject_reason,
+            AmendReason::increase_not_allowed);
+  const ModelAmendResult amended = book.amend_quantity(stop, Quantity{4U});
+  EXPECT_EQ(amended.reject_reason, AmendReason::none);
+  EXPECT_EQ(amended.order_id, OrderId{1U});
+  EXPECT_EQ(amended.previous_quantity, Quantity{6U});
+  EXPECT_EQ(amended.new_quantity, Quantity{4U});
+  EXPECT_EQ(amended.token, stop);
+  EXPECT_EQ(book.order_info(stop),
+            (OrderInfo{OrderId{1U}, Side::buy, Price{0}, Quantity{4U}}));
+}
+
 } // namespace
 } // namespace matching_engine::test
