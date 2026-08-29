@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360">
+  <title>Matching engine architecture</title>
+  <desc>Gateway, durable ingress, single-writer matching, ordered publication, journal, and snapshots.</desc>
+  <style>
+      .bg { fill: #f7f7f4; }
+      .panel { fill: #ffffff; stroke: #253238; stroke-width: 2; }
+      .durable { fill: #e7f2ea; stroke: #176b45; stroke-width: 2; }
+      .warning { fill: #fff3d6; stroke: #9a6500; stroke-width: 2; }
+      .title { font: 700 22px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #172126; }
+      .label { font: 700 15px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #172126; }
+      .small { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #425157; }
+      .arrow { stroke: #253238; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    </style>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#253238" />
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="960" height="360" class="bg" />
+  <text x="40" y="45" class="title">DETERMINISTIC DURABLE PIPELINE</text>
+  <rect x="40" y="110" width="170" height="90" rx="6" class="panel" />
+  <text x="58" y="145" class="label">Gateway</text>
+  <text x="58" y="172" class="small">validate before sequence</text>
+  <rect x="260" y="110" width="170" height="90" rx="6" class="durable" />
+  <text x="278" y="145" class="label">Ingress</text>
+  <text x="278" y="172" class="small">append before publish</text>
+  <rect x="480" y="110" width="190" height="90" rx="6" class="panel" />
+  <text x="498" y="145" class="label">Matching</text>
+  <text x="498" y="172" class="small">single writer</text>
+  <rect x="720" y="110" width="190" height="90" rx="6" class="panel" />
+  <text x="738" y="145" class="label">Publication</text>
+  <text x="738" y="172" class="small">canonical events</text>
+  <path d="M210,155 L250,155" class="arrow" />
+  <path d="M430,155 L470,155" class="arrow" />
+  <path d="M670,155 L710,155" class="arrow" />
+  <rect x="260" y="255" width="170" height="65" rx="6" class="durable" />
+  <text x="278" y="282" class="label">Journal segments</text>
+  <text x="278" y="305" class="small">CRC32C + fsync</text>
+  <path d="M345,200 L345,245" class="arrow" />
+  <rect x="500" y="255" width="150" height="65" rx="6" class="durable" />
+  <text x="518" y="282" class="label">Snapshots</text>
+  <text x="518" y="305" class="small">atomic replace</text>
+  <path d="M575,200 L575,245" class="arrow" />
+</svg>
