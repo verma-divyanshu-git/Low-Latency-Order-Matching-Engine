@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <limits>
+#include <string>
 #include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -414,6 +415,8 @@ const char* journal_error_message(JournalError error) noexcept {
     return "invalid journal path";
   case JournalError::invalid_capacity:
     return "invalid capacity";
+  case JournalError::invalid_base_sequence:
+    return "invalid base sequence";
   case JournalError::already_exists:
     return "path already exists";
   case JournalError::not_found:
@@ -509,15 +512,18 @@ std::uint32_t crc32c(std::span<const std::byte> bytes) noexcept {
 }
 
 MmapJournal::MmapJournal(int descriptor, std::byte* mapping, std::size_t mapping_size,
-                         std::uint64_t capacity) noexcept
+                         std::uint64_t capacity, std::uint64_t base_sequence) noexcept
     : descriptor_{descriptor}, mapping_{mapping}, mapping_size_{mapping_size}, capacity_{capacity},
+      base_sequence_{base_sequence},
       owner_pid_{static_cast<std::int64_t>(::getpid())} {}
 
 MmapJournal::MmapJournal(MmapJournal&& other) noexcept
     : descriptor_{std::exchange(other.descriptor_, -1)},
       mapping_{std::exchange(other.mapping_, nullptr)},
       mapping_size_{std::exchange(other.mapping_size_, 0U)},
-      capacity_{std::exchange(other.capacity_, 0U)}, size_{std::exchange(other.size_, 0U)},
+      capacity_{std::exchange(other.capacity_, 0U)},
+      base_sequence_{std::exchange(other.base_sequence_, 1U)},
+      size_{std::exchange(other.size_, 0U)},
       last_logical_time_{std::exchange(other.last_logical_time_, 0U)},
       owner_pid_{std::exchange(other.owner_pid_, 0)},
       writer_poisoned_{std::exchange(other.writer_poisoned_, false)} {}
@@ -530,6 +536,7 @@ MmapJournal& MmapJournal::operator=(MmapJournal&& other) noexcept {
     mapping_size_ = std::exchange(other.mapping_size_, 0U);
     capacity_ = std::exchange(other.capacity_, 0U);
     size_ = std::exchange(other.size_, 0U);
+    base_sequence_ = std::exchange(other.base_sequence_, 1U);
     last_logical_time_ = std::exchange(other.last_logical_time_, 0U);
     owner_pid_ = std::exchange(other.owner_pid_, 0);
     writer_poisoned_ = std::exchange(other.writer_poisoned_, false);
@@ -542,10 +549,16 @@ MmapJournal::~MmapJournal() {
 }
 
 std::expected<MmapJournal, JournalOpenFailure>
-MmapJournal::create(const std::filesystem::path& path, std::uint64_t capacity) noexcept {
+MmapJournal::create(const std::filesystem::path& path, std::uint64_t capacity,
+                    Sequence base_sequence) noexcept {
   std::size_t file_size{};
   if (capacity == 0U || capacity > kMaximumJournalCapacity) {
     return std::unexpected{JournalOpenFailure{.operation = JournalError::invalid_capacity}};
+  }
+  if (base_sequence.value() == 0U ||
+      capacity - 1U > std::numeric_limits<std::uint64_t>::max() - base_sequence.value()) {
+    return std::unexpected{
+        JournalOpenFailure{.operation = JournalError::invalid_base_sequence}};
   }
   if (!checked_file_size(capacity, file_size)) {
     return std::unexpected{JournalOpenFailure{.operation = JournalError::file_size_overflow}};
@@ -599,6 +612,7 @@ MmapJournal::create(const std::filesystem::path& path, std::uint64_t capacity) n
   write_u32(header, 12U, static_cast<std::uint32_t>(kJournalHeaderSize));
   write_u32(header, 16U, static_cast<std::uint32_t>(kJournalRecordSize));
   write_u64(header, 20U, capacity);
+  write_u64(header, static_cast<std::size_t>(kJournalBaseSequenceOffset), base_sequence.value());
   const bool mapping_sync_failed =
       sync_mapping(mapping, file_size, SyscallPoint::create_header_msync, &path, nullptr) != 0;
   const bool file_sync_failed =
@@ -613,7 +627,7 @@ MmapJournal::create(const std::filesystem::path& path, std::uint64_t capacity) n
     return fail(JournalError::io_error, mapping);
   }
   parent_descriptor = -1;
-  return MmapJournal{descriptor, mapping, file_size, capacity};
+  return MmapJournal{descriptor, mapping, file_size, capacity, base_sequence.value()};
 }
 
 std::expected<MmapJournal, JournalOpenFailure>
@@ -668,13 +682,21 @@ MmapJournal::open(const std::filesystem::path& path) noexcept {
       return fail(JournalError::invalid_header);
     }
   }
-  if (read_u32(header, 8U) != kJournalFormatVersion ||
+  const std::uint32_t version = read_u32(header, 8U);
+  const std::size_t reserved_offset = version == 1U ? 28U : kJournalHeaderReservedOffset;
+  if ((version != 1U && version != kJournalFormatVersion) ||
       read_u32(header, 12U) != kJournalHeaderSize || read_u32(header, 16U) != kJournalRecordSize ||
       !all_zero(std::span<const std::byte>{header}.subspan(
-          static_cast<std::size_t>(kJournalHeaderReservedOffset)))) {
+          reserved_offset))) {
     return fail(JournalError::invalid_header);
   }
   const std::uint64_t capacity = read_u64(header, 20U);
+  const std::uint64_t base_sequence =
+      version == 1U ? 1U : read_u64(header, static_cast<std::size_t>(kJournalBaseSequenceOffset));
+  if (base_sequence == 0U ||
+      capacity == 0U || capacity - 1U > std::numeric_limits<std::uint64_t>::max() - base_sequence) {
+    return fail(JournalError::invalid_header);
+  }
   std::size_t file_size{};
   if (!checked_file_size(capacity, file_size)) {
     return fail(JournalError::invalid_header);
@@ -691,7 +713,8 @@ MmapJournal::open(const std::filesystem::path& path) noexcept {
   if (raw_mapping == MAP_FAILED) {
     return fail(JournalError::map_failed);
   }
-  MmapJournal journal{descriptor, static_cast<std::byte*>(raw_mapping), file_size, capacity};
+  MmapJournal journal{descriptor, static_cast<std::byte*>(raw_mapping), file_size, capacity,
+                      base_sequence};
   auto relinquish_journal_resources = [&journal] {
     journal.descriptor_ = -1;
     journal.mapping_ = nullptr;
@@ -734,7 +757,7 @@ JournalError MmapJournal::recover() noexcept {
       return JournalError::corrupt_record;
     }
     const auto decoded = decode_record(record);
-    if (!decoded.has_value() || decoded->sequence.value() != index + 1U ||
+    if (!decoded.has_value() || decoded->sequence.value() != base_sequence_ + index ||
         decoded->logical_time < last_logical_time_) {
       return JournalError::corrupt_record;
     }
@@ -760,7 +783,7 @@ JournalError MmapJournal::append(const SequencedCommand& command) noexcept {
   if (validate_command_payload(command.payload) != CommandValidationError::none) {
     return JournalError::invalid_command;
   }
-  if (command.sequence.value() != size_ + 1U) {
+  if (command.sequence.value() != base_sequence_ + size_) {
     return JournalError::sequence_discontinuity;
   }
   if (command.logical_time < last_logical_time_) {
@@ -865,6 +888,102 @@ JournalError MmapJournal::close() noexcept {
     } else {
       descriptor_ = -1;
     }
+  }
+  return result;
+}
+
+RotatingJournal::RotatingJournal(std::filesystem::path path_prefix,
+                                 std::uint64_t segment_capacity,
+                                 MmapJournal active) noexcept
+    : path_prefix_{std::move(path_prefix)}, segment_capacity_{segment_capacity},
+      active_{std::move(active)} {}
+
+std::expected<std::filesystem::path, JournalError>
+RotatingJournal::segment_path(const std::filesystem::path& path_prefix,
+                              Sequence base_sequence) noexcept {
+  try {
+    if (path_prefix.empty() || base_sequence.value() == 0U) {
+      return std::unexpected{JournalError::invalid_path};
+    }
+    std::string sequence = std::to_string(base_sequence.value());
+    sequence.insert(0U, 20U - sequence.size(), '0');
+    return std::filesystem::path{path_prefix.string() + "." + sequence + ".journal"};
+  } catch (...) {
+    return std::unexpected{JournalError::io_error};
+  }
+}
+
+std::expected<RotatingJournal, JournalOpenFailure>
+RotatingJournal::create(const std::filesystem::path& path_prefix,
+                        std::uint64_t segment_capacity, Sequence base_sequence) noexcept {
+  const auto path = segment_path(path_prefix, base_sequence);
+  if (!path.has_value()) {
+    return std::unexpected{JournalOpenFailure{.operation = path.error()}};
+  }
+  auto journal = MmapJournal::create(*path, segment_capacity, base_sequence);
+  if (!journal.has_value()) {
+    return std::unexpected{journal.error()};
+  }
+  return RotatingJournal{path_prefix, segment_capacity, std::move(*journal)};
+}
+
+JournalError RotatingJournal::rotate() noexcept {
+  if (!active_.has_value()) {
+    return JournalError::closed;
+  }
+  const std::uint64_t next_base =
+      active_->base_sequence().value() + active_->size();
+  const JournalError close_error = active_->close();
+  if (close_error != JournalError::none) {
+    return close_error;
+  }
+  const auto path = segment_path(path_prefix_, Sequence{next_base});
+  if (!path.has_value()) {
+    return path.error();
+  }
+  auto next = MmapJournal::create(*path, segment_capacity_, Sequence{next_base});
+  if (!next.has_value()) {
+    return next.error().operation;
+  }
+  active_ = std::move(*next);
+  ++segment_count_;
+  return JournalError::none;
+}
+
+JournalError RotatingJournal::append(const SequencedCommand& command) noexcept {
+  if (!active_.has_value()) {
+    return JournalError::closed;
+  }
+  if (validate_command_payload(command.payload) != CommandValidationError::none) {
+    return JournalError::invalid_command;
+  }
+  if (command.sequence.value() !=
+      active_->base_sequence().value() + active_->size()) {
+    return JournalError::sequence_discontinuity;
+  }
+  if (command.logical_time < last_logical_time_) {
+    return JournalError::decreasing_logical_time;
+  }
+  if (active_->full()) {
+    const JournalError rotation = rotate();
+    if (rotation != JournalError::none) {
+      return rotation;
+    }
+  }
+  const JournalError result = active_->append(command);
+  if (result == JournalError::none) {
+    last_logical_time_ = command.logical_time;
+  }
+  return result;
+}
+
+JournalError RotatingJournal::close() noexcept {
+  if (!active_.has_value()) {
+    return JournalError::none;
+  }
+  const JournalError result = active_->close();
+  if (result == JournalError::none) {
+    active_.reset();
   }
   return result;
 }

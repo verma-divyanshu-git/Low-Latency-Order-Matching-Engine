@@ -15,20 +15,16 @@ Last updated: 2026-08-29.
 - Phase 4 configurable trader-based self-trade prevention is merged.
 - Phase 4 iceberg replenishment is merged in PR #37 at `c1025d0`.
 - Phase 4 stop and stop-limit orders are merged in PR #38 at `382bb0d`.
+- Phase 4 threshold pro-rata and opening-cross auction are merged in PR #39 at `1fbec37`.
+- Phase 4 is complete: every advanced semantic has production, independent-reference, differential, invariant, replay, snapshot, fuzz, protocol, and ADR coverage.
 
 ### In progress
 
-- Phase 4 threshold pro-rata with FIFO residue is implemented, committed at `9b7084c`, pushed, and locally validated on `feat/threshold-pro-rata`.
-- Phase 4 opening-cross auction is implemented and locally validated in the same working tree.
-- Opening-cross covers production and independent-reference semantics, deterministic price selection and FIFO execution, invariants, command encoding, sequenced events, journal replay, snapshot v6 with v1-v5 compatibility, differential tests, fuzz coverage, protocol documentation, and ADR-0023.
-- Local validation passes 260 of 260 debug tests and both 10,000-execution fuzz smoke tests.
-- GitHub integration remains: reconcile or create the pro-rata PR, commit and push opening-cross, obtain green CI, merge to `main`, and delete the feature branch.
+- Phase 5 journal format v2 base-sequence semantics and bounded deterministic rotation are implemented on `feat/journal-rotation`.
+- The focused journal v2 and rotation suite passes 5 of 5 tests.
 
 ### Not started
 
-- Phase 4 implementation is complete locally but is not yet integrated into `main`.
-- Phase 5 is not started.
-- Phase 5 still needs journal rotation with base-sequence semantics.
 - Phase 5 still needs snapshot-driven journal compaction.
 - Phase 5 still needs deterministic recovery across rotated segments without skipping committed corruption or sequence gaps.
 - Phase 5 still needs crash-point tests for rotation, rename, truncation, and compaction.
@@ -50,8 +46,11 @@ Last updated: 2026-08-29.
 - Implemented: opening-cross accumulation, deterministic uncross price selection, FIFO execution, continuous-state transition, command and event encoding, replay, snapshot v6, independent reference behavior, differential checks, fuzz coverage, and ADR-0023.
 - Fixed: opening-auction fuzzing exposed a rejection-precedence mismatch in the independent reference model; the minimized input now passes.
 - Verified: the combined Phase 4 working tree passes 260 of 260 debug tests and both 10,000-execution fuzz smoke tests.
-- Blocked: the VS Code terminal Git channel exits with code 130 before producing output, and the isolated VS Code Python execution host is unavailable. No commit, PR, merge, or branch deletion was attempted after that failure.
-- Next: restore a functioning noninteractive Git execution channel, then commit and push opening-cross, integrate the Phase 4 PR or PRs into `main`, verify green CI, and delete the feature branch.
+- Done: PR #39 merged threshold pro-rata and opening-cross into `main` at `1fbec37`; `main` matches `origin/main` and the feature branch is deleted.
+- Verified after merge: all 10 focused Phase 4 core tests and all 5 focused snapshot, event-codec, and replay tests pass on `main`.
+- Next: implement Phase 5 persistence operations one concern at a time.
+- Implemented: journal v2 stores an explicit base sequence, preserves v1 compatibility, rejects sequence-range overflow, and rotates to deterministic base-named segments without overwriting existing files.
+- Verified: all 5 focused journal v2 and rotation regressions pass.
 
 - Done: `develop` now exists on `origin` from current `main`.
 - Done: local identity hooks require Divyanshu's personal commit identity and the approved GitHub account.

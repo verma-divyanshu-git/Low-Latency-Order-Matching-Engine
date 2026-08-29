@@ -7,15 +7,17 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <span>
 
 namespace matching_engine {
 
-inline constexpr std::uint32_t kJournalFormatVersion = 1U;
+inline constexpr std::uint32_t kJournalFormatVersion = 2U;
 inline constexpr std::uint64_t kMaximumJournalCapacity = 1'000'000U;
 inline constexpr std::uint64_t kJournalHeaderSize = 64U;
 inline constexpr std::uint64_t kJournalRecordSize = 80U;
-inline constexpr std::uint64_t kJournalHeaderReservedOffset = 28U;
+inline constexpr std::uint64_t kJournalBaseSequenceOffset = 28U;
+inline constexpr std::uint64_t kJournalHeaderReservedOffset = 36U;
 inline constexpr std::uint64_t kRecordCommitOffset = 0U;
 inline constexpr std::uint64_t kRecordSequenceOffset = 4U;
 inline constexpr std::uint64_t kRecordLogicalTimeOffset = 12U;
@@ -28,6 +30,7 @@ enum class JournalError : std::uint8_t {
   none,
   invalid_path,
   invalid_capacity,
+  invalid_base_sequence,
   already_exists,
   not_found,
   permission_denied,
@@ -110,7 +113,8 @@ void run_after_parent_open(const std::filesystem::path& path, ParentOpenedHook h
 class MmapJournal {
 public:
   [[nodiscard]] static std::expected<MmapJournal, JournalOpenFailure>
-  create(const std::filesystem::path& path, std::uint64_t capacity) noexcept;
+    create(const std::filesystem::path& path, std::uint64_t capacity,
+      Sequence base_sequence = Sequence{1U}) noexcept;
   [[nodiscard]] static std::expected<MmapJournal, JournalOpenFailure>
   open(const std::filesystem::path& path) noexcept;
 
@@ -131,6 +135,9 @@ public:
   [[nodiscard]] std::uint64_t size() const noexcept {
     return size_;
   }
+  [[nodiscard]] Sequence base_sequence() const noexcept {
+    return Sequence{base_sequence_};
+  }
   [[nodiscard]] bool full() const noexcept {
     return size_ == capacity_;
   }
@@ -140,17 +147,53 @@ public:
 
 private:
   MmapJournal(int descriptor, std::byte* mapping, std::size_t mapping_size,
-              std::uint64_t capacity) noexcept;
+              std::uint64_t capacity, std::uint64_t base_sequence) noexcept;
   [[nodiscard]] JournalError recover() noexcept;
 
   int descriptor_{-1};
   std::byte* mapping_{};
   std::size_t mapping_size_{};
   std::uint64_t capacity_{};
+  std::uint64_t base_sequence_{1U};
   std::uint64_t size_{};
   std::uint64_t last_logical_time_{};
   std::int64_t owner_pid_{};
   bool writer_poisoned_{};
+};
+
+class RotatingJournal {
+public:
+  [[nodiscard]] static std::expected<RotatingJournal, JournalOpenFailure>
+  create(const std::filesystem::path& path_prefix, std::uint64_t segment_capacity,
+         Sequence base_sequence = Sequence{1U}) noexcept;
+
+  RotatingJournal(const RotatingJournal&) = delete;
+  RotatingJournal& operator=(const RotatingJournal&) = delete;
+  RotatingJournal(RotatingJournal&&) noexcept = default;
+  RotatingJournal& operator=(RotatingJournal&&) noexcept = default;
+
+  [[nodiscard]] JournalError append(const SequencedCommand& command) noexcept;
+  [[nodiscard]] JournalError close() noexcept;
+
+  [[nodiscard]] Sequence active_base_sequence() const noexcept {
+    return active_.has_value() ? active_->base_sequence() : Sequence{0U};
+  }
+  [[nodiscard]] std::uint64_t segment_count() const noexcept {
+    return segment_count_;
+  }
+  [[nodiscard]] static std::expected<std::filesystem::path, JournalError>
+  segment_path(const std::filesystem::path& path_prefix, Sequence base_sequence) noexcept;
+
+private:
+  RotatingJournal(std::filesystem::path path_prefix, std::uint64_t segment_capacity,
+                  MmapJournal active) noexcept;
+  [[nodiscard]] JournalError rotate() noexcept;
+
+  std::filesystem::path path_prefix_;
+  std::uint64_t segment_capacity_{};
+  std::optional<MmapJournal> active_;
+  std::uint64_t segment_count_{1U};
+  std::uint64_t last_logical_time_{};
 };
 
 } // namespace matching_engine
