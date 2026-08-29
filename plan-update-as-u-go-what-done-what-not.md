@@ -17,18 +17,16 @@ Last updated: 2026-08-29.
 - Phase 4 stop and stop-limit orders are merged in PR #38 at `382bb0d`.
 - Phase 4 threshold pro-rata and opening-cross auction are merged in PR #39 at `1fbec37`.
 - Phase 4 is complete: every advanced semantic has production, independent-reference, differential, invariant, replay, snapshot, fuzz, protocol, and ADR coverage.
+- Phase 5 journal rotation, base-sequence semantics, multi-segment recovery, snapshot-driven compaction, crash recovery, and operator guidance are merged.
+- Phase 5 is complete in PRs #40, #41, and #42; final recovery operations merged at `9a20576`.
 
 ### In progress
 
-- PR #40 merged journal v2 base-sequence semantics and deterministic rotation at `323fb1a`.
-- PR #41 merged validated segment discovery, deterministic multi-segment replay, and snapshot-driven whole-segment compaction at `313b0df`.
-- Resumable rotation, rotated-recovery CLI support, deterministic rotation and compaction crash tests, and the recovery runbook are implemented on `feat/persistence-recovery-operations`.
-- The final Phase 5 branch passes 111 persistence tests, 7 replay CLI tests, and the full 283-test debug catalog.
+- Phase 6 production operation boundaries are next.
 
 ### Not started
 
-- Phase 5 needs only final PR integration, green CI, and branch deletion.
-- Phases 6, 7, 8, 9, and 10 are not started until Phase 5 merges.
+- Phases 6, 7, 8, 9, and 10 are not started.
 
 ## Detailed execution history
 
@@ -62,6 +60,10 @@ Last updated: 2026-08-29.
 - Existing coverage verifies snapshot pre-rename preservation, post-rename indeterminate durability, journal and snapshot truncation rejection, and post-publish commit recovery.
 - Added: `docs/recovery-runbook.md` documents stop, preserve, validate, replay, resume, compaction, and return-to-service procedures and states explicitly that CRC32C detects accidental corruption only.
 - Verified: the final Phase 5 branch passes 111 persistence tests, all 7 replay CLI tests, and 283 of 283 debug tests.
+- Done: PR #42 merged resumable rotation, rotated-recovery CLI support, deterministic crash-window tests, and the recovery runbook into `main` at `9a20576`; all seven CI jobs passed and the feature branch was deleted.
+- Verified after merge: all 5 focused rotation and compaction recovery-window tests and all 7 replay CLI tests pass on `main`.
+- Phase 5 is complete.
+- Next: begin Phase 6 production operation boundaries one concern at a time.
 
 - Done: `develop` now exists on `origin` from current `main`.
 - Done: local identity hooks require Divyanshu's personal commit identity and the approved GitHub account.

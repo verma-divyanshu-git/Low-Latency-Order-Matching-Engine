@@ -137,7 +137,9 @@ PR #41 merged that concern at `313b0df`; all seven CI jobs passed.
 Resumable rotation, rotated-recovery CLI support, deterministic rotation and compaction crash tests, and `docs/recovery-runbook.md` are implemented on `feat/persistence-recovery-operations`.
 Existing tests cover snapshot rename and journal and snapshot truncation crash boundaries.
 The final branch passes 111 persistence tests, all 7 replay CLI tests, and the full 283-test debug catalog.
-Phase 5 needs only final PR integration, green CI, and branch deletion.
+PR #42 merged the final recovery concern at `9a20576`; all seven CI jobs passed and the feature branch was deleted.
+Post-merge verification passes all 5 focused recovery-window tests and all 7 replay CLI tests on `main`.
+Phase 5 completed on 2026-08-29 in PRs #40, #41, and #42.
 
 ### Phase 6: operation boundaries
 
