@@ -252,13 +252,16 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
   add_dependencies(matching_engine_replay_cli_tests matching_engine_replay)
   engine_configure_target(matching_engine_replay_cli_tests)
   gtest_discover_tests(matching_engine_replay_cli_tests)
-  add_test(
-    NAME install_package_test
-    COMMAND
-      ${CMAKE_COMMAND}
-      -DENGINE_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
-      -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/verify_install.cmake)
+  if(NOT ENGINE_ENABLE_ASAN AND NOT ENGINE_ENABLE_UBSAN AND NOT ENGINE_ENABLE_TSAN
+     AND NOT ENGINE_ENABLE_FUZZING)
+    add_test(
+      NAME install_package_test
+      COMMAND
+        ${CMAKE_COMMAND}
+        -DENGINE_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+        -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/verify_install.cmake)
+  endif()
 
   if(ENGINE_BUILD_BENCHMARKS)
     add_executable(
