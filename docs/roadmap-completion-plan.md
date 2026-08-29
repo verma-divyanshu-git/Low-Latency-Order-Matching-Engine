@@ -133,7 +133,11 @@ Document recovery and retain the CRC32C limitation as accidental-corruption dete
 Journal format v2 base-sequence semantics and deterministic bounded rotation are implemented on `feat/journal-rotation`.
 PR #40 merged that concern at `323fb1a`; all seven CI jobs passed.
 Snapshot-driven whole-segment compaction, validated canonical segment discovery, and deterministic multi-segment replay are implemented on `feat/snapshot-journal-compaction`.
-The focused segment discovery, compacted replay, and compaction suite passes 11 of 11 tests.
+PR #41 merged that concern at `313b0df`; all seven CI jobs passed.
+Resumable rotation, rotated-recovery CLI support, deterministic rotation and compaction crash tests, and `docs/recovery-runbook.md` are implemented on `feat/persistence-recovery-operations`.
+Existing tests cover snapshot rename and journal and snapshot truncation crash boundaries.
+The final branch passes 111 persistence tests, all 7 replay CLI tests, and the full 283-test debug catalog.
+Phase 5 needs only final PR integration, green CI, and branch deletion.
 
 ### Phase 6: operation boundaries
 

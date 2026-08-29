@@ -18,6 +18,7 @@ namespace {
 
 struct Options {
   std::optional<std::string> journal;
+  std::optional<std::string> journal_prefix;
   std::optional<std::string> snapshot;
   std::optional<std::int64_t> minimum;
   std::optional<std::int64_t> maximum;
@@ -75,7 +76,8 @@ std::expected<Options, std::string> parse_options(int argc, char** argv) {
       continue;
     }
     const auto needs_value = [&](std::string_view name) { return option == name; };
-    if (!(needs_value("--journal") || needs_value("--snapshot") || needs_value("--min") ||
+        if (!(needs_value("--journal") || needs_value("--journal-prefix") ||
+          needs_value("--snapshot") || needs_value("--min") ||
           needs_value("--max") || needs_value("--tick") || needs_value("--max-orders") ||
           needs_value("--max-quantity") || needs_value("--expect-crc32c") ||
           needs_value("--expect-events") || needs_value("--expect-live-orders"))) {
@@ -86,8 +88,11 @@ std::expected<Options, std::string> parse_options(int argc, char** argv) {
     }
     const std::string_view value{argv[++index]};
     std::string error;
-    if (option == "--journal" || option == "--snapshot") {
-      auto& destination = option == "--journal" ? options.journal : options.snapshot;
+    if (option == "--journal" || option == "--journal-prefix" || option == "--snapshot") {
+      auto& destination = option == "--journal"
+                              ? options.journal
+                              : (option == "--journal-prefix" ? options.journal_prefix
+                                                               : options.snapshot);
       if (destination.has_value()) {
         return std::unexpected{"duplicate " + std::string{option}};
       }
@@ -178,13 +183,14 @@ int main(int argc, char** argv) {
     if (argc != 2) {
       return fail("--help cannot be combined with other options");
     }
-    std::cout << "Usage: matching_engine_replay --journal PATH [--snapshot PATH | "
+    std::cout << "Usage: matching_engine_replay (--journal PATH | --journal-prefix PREFIX) "
+           "[--snapshot PATH | "
                  "--min N --max N --tick 1 --max-orders N --max-quantity N] "
                  "[--expect-crc32c XXXXXXXX] [--expect-events N] [--expect-live-orders N]\n";
     return 0;
   }
-  if (!options.journal.has_value()) {
-    return fail("missing --journal");
+  if (options.journal.has_value() == options.journal_prefix.has_value()) {
+    return fail("exactly one of --journal or --journal-prefix is required");
   }
   const bool any_config = options.minimum.has_value() || options.maximum.has_value() ||
                           options.tick.has_value() || options.max_orders.has_value() ||
@@ -227,13 +233,23 @@ int main(int argc, char** argv) {
       return fail("invalid engine config");
     }
   }
-  auto journal = MmapJournal::open(*options.journal);
-  if (!journal.has_value()) {
-    return fail(journal_error_message(journal.error().operation));
-  }
   std::vector<EngineEvent> events(engine->maximum_event_capacity());
-  const auto replayed =
-      replay_journal(*journal, *engine, point.sequence, point.logical_time, events);
+  std::expected<ReplayResult, ReplayError> replayed =
+      std::unexpected{ReplayError::journal};
+  if (options.journal.has_value()) {
+    auto journal = MmapJournal::open(*options.journal);
+    if (!journal.has_value()) {
+      return fail(journal_error_message(journal.error().operation));
+    }
+    replayed = replay_journal(*journal, *engine, point.sequence, point.logical_time, events);
+  } else {
+    auto journals = JournalSegmentSet::open(*options.journal_prefix);
+    if (!journals.has_value()) {
+      return fail(journal_set_error_message(journals.error()));
+    }
+    replayed = replay_journal_segments(*journals, *engine, point.sequence, point.logical_time,
+                                       events);
+  }
   if (!replayed.has_value()) {
     return fail(replay_error_message(replayed.error()));
   }

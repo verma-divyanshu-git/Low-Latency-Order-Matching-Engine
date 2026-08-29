@@ -987,6 +987,60 @@ TEST(JournalCompactionTest, RejectsSnapshotAheadWithoutDeletingSegments) {
   EXPECT_EQ(segments->segment(0U).base_sequence(), Sequence{1U});
 }
 
+TEST(JournalCompactionCrashTest, UnlinkFailurePreservesRecoverableChainAndRetrySucceeds) {
+  TemporaryDirectory temporary;
+  const auto prefix = temporary.path() / "commands";
+  const auto snapshot_path = temporary.path() / "engine.snapshot";
+  auto rotating = RotatingJournal::create(prefix, 1U);
+  ASSERT_TRUE(rotating.has_value());
+  SequencedEngine live{PriceDomain{Price{100}, 3U}, 2U, Quantity{10U}};
+  std::array<EngineEvent, 5U> events{};
+  const SequencedCommand first{CommandPayload::submit_limit(OrderId{1U}, Side::buy, Price{100},
+                                                             Quantity{1U}),
+                               Sequence{1U}, 1U};
+  ASSERT_EQ(rotating->append(first), JournalError::none);
+  ASSERT_EQ(live.apply(first, events).status, ApplyStatus::applied);
+  ASSERT_EQ(rotating->close(), JournalError::none);
+  ASSERT_EQ(save_snapshot_atomic(snapshot_path, live, SnapshotPoint{Sequence{1U}, 1U}),
+            SnapshotError::none);
+  replay_testing::fail_compaction_once(replay_testing::CompactionFailurePoint::unlink);
+
+  EXPECT_EQ(compact_journal_segments(prefix, snapshot_path), JournalCompactionError::io_error);
+  EXPECT_TRUE(JournalSegmentSet::open(prefix).has_value());
+  EXPECT_EQ(compact_journal_segments(prefix, snapshot_path), JournalCompactionError::none);
+  auto compacted = JournalSegmentSet::open(prefix);
+  ASSERT_TRUE(compacted.has_value());
+  ASSERT_EQ(compacted->size(), 1U);
+  EXPECT_EQ(compacted->segment(0U).base_sequence(), Sequence{2U});
+}
+
+TEST(JournalCompactionCrashTest, ParentSyncFailureLeavesValidCompactedChain) {
+  TemporaryDirectory temporary;
+  const auto prefix = temporary.path() / "commands";
+  const auto snapshot_path = temporary.path() / "engine.snapshot";
+  auto rotating = RotatingJournal::create(prefix, 1U);
+  ASSERT_TRUE(rotating.has_value());
+  SequencedEngine live{PriceDomain{Price{100}, 3U}, 2U, Quantity{10U}};
+  std::array<EngineEvent, 5U> events{};
+  const SequencedCommand first{CommandPayload::submit_limit(OrderId{1U}, Side::buy, Price{100},
+                                                             Quantity{1U}),
+                               Sequence{1U}, 1U};
+  ASSERT_EQ(rotating->append(first), JournalError::none);
+  ASSERT_EQ(live.apply(first, events).status, ApplyStatus::applied);
+  ASSERT_EQ(rotating->close(), JournalError::none);
+  ASSERT_EQ(save_snapshot_atomic(snapshot_path, live, SnapshotPoint{Sequence{1U}, 1U}),
+            SnapshotError::none);
+  replay_testing::fail_compaction_once(replay_testing::CompactionFailurePoint::parent_fsync);
+
+  EXPECT_EQ(compact_journal_segments(prefix, snapshot_path),
+            JournalCompactionError::commit_indeterminate);
+  auto compacted = JournalSegmentSet::open(prefix);
+  ASSERT_TRUE(compacted.has_value());
+  ASSERT_EQ(compacted->size(), 1U);
+  EXPECT_EQ(compacted->segment(0U).base_sequence(), Sequence{2U});
+  EXPECT_EQ(compacted->segment(0U).size(), 0U);
+}
+
 TEST(ReplayTest, ExactMixedContinuationPreservesEventsHandlesAndNextAllocation) {
   TemporaryDirectory temporary;
   const auto journal_path = temporary.path() / "commands.journal";

@@ -100,6 +100,16 @@ replay_journal_segments(JournalSegmentSet& journals, SequencedEngine& engine,
 compact_journal_segments(const std::filesystem::path& path_prefix,
                          const std::filesystem::path& durable_snapshot_path) noexcept;
 
+#if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
+namespace replay_testing {
+enum class CompactionFailurePoint : std::uint8_t {
+  unlink,
+  parent_fsync,
+};
+void fail_compaction_once(CompactionFailurePoint point) noexcept;
+} // namespace replay_testing
+#endif
+
 [[nodiscard]] std::expected<ReplayResult, MarketDataReplayError>
 replay_market_data(MarketDataInputStream& input, MarketDataAdapter& adapter, SequencedEngine& engine,
                    std::span<EngineEvent> event_buffer) noexcept;
