@@ -20,16 +20,15 @@ Last updated: 2026-08-29.
 
 ### In progress
 
-- Phase 5 journal format v2 base-sequence semantics and bounded deterministic rotation are implemented on `feat/journal-rotation`.
 - PR #40 merged journal v2 base-sequence semantics and deterministic rotation at `323fb1a`.
-- Snapshot-driven whole-segment compaction, validated segment discovery, and deterministic multi-segment replay are implemented on `feat/snapshot-journal-compaction`.
-- Focused coverage passes 5 segment-set tests, 3 compacted replay tests, and 3 compaction tests.
+- PR #41 merged validated segment discovery, deterministic multi-segment replay, and snapshot-driven whole-segment compaction at `313b0df`.
+- Resumable rotation, rotated-recovery CLI support, deterministic rotation and compaction crash tests, and the recovery runbook are implemented on `feat/persistence-recovery-operations`.
+- The final Phase 5 branch passes 111 persistence tests, 7 replay CLI tests, and the full 283-test debug catalog.
 
 ### Not started
 
-- Phase 5 still needs crash-point tests for rotation, rename, truncation, and compaction.
-- Phase 5 still needs a recovery runbook and explicit CRC32C accidental-corruption-only guidance.
-- Phases 6, 7, 8, 9, and 10 are not started because Phases 4 and 5 have not converged.
+- Phase 5 needs only final PR integration, green CI, and branch deletion.
+- Phases 6, 7, 8, 9, and 10 are not started until Phase 5 merges.
 
 ## Detailed execution history
 
@@ -56,6 +55,13 @@ Last updated: 2026-08-29.
 - Implemented: replay accepts a compacted first segment only at `snapshot_sequence + 1`, traverses contiguous rotated segments, and rejects missing suffix commands.
 - Implemented: snapshot-driven compaction deletes only covered whole segments and creates a durable empty successor when the snapshot covers the full journal.
 - Verified: all 11 focused segment discovery, compacted replay, and compaction tests pass.
+- Done: PR #41 merged snapshot-driven compaction and multi-segment replay into `main` at `313b0df`; all seven CI jobs passed and the feature branch was deleted.
+- Implemented: `RotatingJournal::resume` validates the complete chain and resumes a partial, full, or already-created empty final segment without sequence or logical-time ambiguity.
+- Implemented: `matching_engine_replay --journal-prefix` validates and replays rotated segment sets; it is mutually exclusive with legacy `--journal` mode.
+- Added: deterministic crash-window coverage for rotation before and after successor creation and compaction unlink and parent-fsync failures.
+- Existing coverage verifies snapshot pre-rename preservation, post-rename indeterminate durability, journal and snapshot truncation rejection, and post-publish commit recovery.
+- Added: `docs/recovery-runbook.md` documents stop, preserve, validate, replay, resume, compaction, and return-to-service procedures and states explicitly that CRC32C detects accidental corruption only.
+- Verified: the final Phase 5 branch passes 111 persistence tests, all 7 replay CLI tests, and 283 of 283 debug tests.
 
 - Done: `develop` now exists on `origin` from current `main`.
 - Done: local identity hooks require Divyanshu's personal commit identity and the approved GitHub account.

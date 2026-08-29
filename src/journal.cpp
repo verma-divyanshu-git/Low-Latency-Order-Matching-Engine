@@ -929,6 +929,23 @@ RotatingJournal::create(const std::filesystem::path& path_prefix,
   return RotatingJournal{path_prefix, segment_capacity, std::move(*journal)};
 }
 
+std::expected<RotatingJournal, JournalSetError>
+RotatingJournal::resume(const std::filesystem::path& path_prefix) noexcept {
+  auto segments = JournalSegmentSet::open(path_prefix);
+  if (!segments.has_value()) {
+    return std::unexpected{segments.error()};
+  }
+  const std::uint64_t segment_count = segments->size();
+  auto active = segments->release_last();
+  if (!active.has_value()) {
+    return std::unexpected{active.error()};
+  }
+  RotatingJournal result{path_prefix, active->capacity(), std::move(*active)};
+  result.segment_count_ = segment_count;
+  result.last_logical_time_ = result.active_->last_logical_time();
+  return result;
+}
+
 JournalError RotatingJournal::rotate() noexcept {
   if (!active_.has_value()) {
     return JournalError::closed;
@@ -1091,6 +1108,21 @@ JournalSegmentSet::open(const std::filesystem::path& path_prefix) noexcept {
   } catch (...) {
     return std::unexpected{JournalSetError::io_error};
   }
+}
+
+std::expected<MmapJournal, JournalSetError> JournalSegmentSet::release_last() noexcept {
+  if (segments_.empty()) {
+    return std::unexpected{JournalSetError::no_segments};
+  }
+  for (std::size_t index = 0U; index + 1U < segments_.size(); ++index) {
+    if (segments_[index].close() != JournalError::none) {
+      return std::unexpected{JournalSetError::io_error};
+    }
+  }
+  MmapJournal result = std::move(segments_.back());
+  segments_.clear();
+  paths_.clear();
+  return result;
 }
 
 } // namespace matching_engine

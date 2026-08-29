@@ -256,6 +256,73 @@ TEST(RotatingJournalTest, CreatesDeterministicContiguousSegments) {
   EXPECT_EQ(*second->read(0U), command(12U, 6U));
 }
 
+TEST(RotatingJournalRecoveryTest, ResumesFullSegmentAndCreatesExactSuccessor) {
+  TemporaryDirectory temporary;
+  const auto prefix = temporary.path() / "commands";
+  auto initial = RotatingJournal::create(prefix, 2U);
+  ASSERT_TRUE(initial.has_value());
+  ASSERT_EQ(initial->append(command(1U, 5U)), JournalError::none);
+  ASSERT_EQ(initial->append(command(2U, 6U)), JournalError::none);
+  ASSERT_EQ(initial->close(), JournalError::none);
+
+  auto resumed = RotatingJournal::resume(prefix);
+  ASSERT_TRUE(resumed.has_value());
+  EXPECT_EQ(resumed->active_base_sequence(), Sequence{1U});
+  EXPECT_EQ(resumed->append(command(3U, 7U)), JournalError::none);
+  EXPECT_EQ(resumed->active_base_sequence(), Sequence{3U});
+  EXPECT_EQ(resumed->segment_count(), 2U);
+  ASSERT_EQ(resumed->close(), JournalError::none);
+
+  auto segments = JournalSegmentSet::open(prefix);
+  ASSERT_TRUE(segments.has_value());
+  ASSERT_EQ(segments->size(), 2U);
+  EXPECT_EQ(*segments->segment(1U).read(0U), command(3U, 7U));
+}
+
+TEST(RotatingJournalRecoveryTest, ResumesExistingEmptySuccessorWithoutExtraRotation) {
+  TemporaryDirectory temporary;
+  const auto prefix = temporary.path() / "commands";
+  auto first = MmapJournal::create(*RotatingJournal::segment_path(prefix, Sequence{1U}), 2U);
+  ASSERT_TRUE(first.has_value());
+  ASSERT_EQ(first->append(command(1U, 5U)), JournalError::none);
+  ASSERT_EQ(first->append(command(2U, 6U)), JournalError::none);
+  ASSERT_EQ(first->close(), JournalError::none);
+  auto empty = MmapJournal::create(*RotatingJournal::segment_path(prefix, Sequence{3U}), 2U,
+                                   Sequence{3U});
+  ASSERT_TRUE(empty.has_value());
+  ASSERT_EQ(empty->close(), JournalError::none);
+
+  auto resumed = RotatingJournal::resume(prefix);
+  ASSERT_TRUE(resumed.has_value());
+  EXPECT_EQ(resumed->active_base_sequence(), Sequence{3U});
+  EXPECT_EQ(resumed->append(command(3U, 7U)), JournalError::none);
+  EXPECT_EQ(resumed->segment_count(), 2U);
+  ASSERT_EQ(resumed->close(), JournalError::none);
+}
+
+TEST(RotatingJournalRecoveryTest, ResumesPartialFinalSegmentWithRecoveredLogicalTime) {
+  TemporaryDirectory temporary;
+  const auto prefix = temporary.path() / "commands";
+  auto initial = RotatingJournal::create(prefix, 3U, Sequence{8U});
+  ASSERT_TRUE(initial.has_value());
+  ASSERT_EQ(initial->append(command(8U, 20U)), JournalError::none);
+  ASSERT_EQ(initial->close(), JournalError::none);
+
+  auto resumed = RotatingJournal::resume(prefix);
+  ASSERT_TRUE(resumed.has_value());
+  EXPECT_EQ(resumed->active_base_sequence(), Sequence{8U});
+  EXPECT_EQ(resumed->append(command(9U, 19U)), JournalError::decreasing_logical_time);
+  EXPECT_EQ(resumed->append(command(9U, 20U)), JournalError::none);
+  EXPECT_EQ(resumed->segment_count(), 1U);
+  ASSERT_EQ(resumed->close(), JournalError::none);
+
+  auto segments = JournalSegmentSet::open(prefix);
+  ASSERT_TRUE(segments.has_value());
+  ASSERT_EQ(segments->size(), 1U);
+  EXPECT_EQ(segments->segment(0U).size(), 2U);
+  EXPECT_EQ(*segments->segment(0U).read(1U), command(9U, 20U));
+}
+
 TEST(JournalSegmentSetTest, OpensAndSortsCanonicalContiguousSegments) {
   TemporaryDirectory temporary;
   const auto prefix = temporary.path() / "commands";

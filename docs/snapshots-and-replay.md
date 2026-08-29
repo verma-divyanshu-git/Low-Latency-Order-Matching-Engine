@@ -78,7 +78,7 @@ Without a snapshot, the CLI requires `--min`, `--max`, `--tick`, `--max-orders`,
 Prices are already represented in integer ticks, so the current format requires `--tick 1`.
 With a snapshot, its configuration is authoritative and all config flags are rejected.
 
-The current journal format retains a prefix beginning at sequence 1.
+Journal v2 segments carry an explicit base sequence; legacy v1 journals have implicit base sequence 1.
 Journal recovery treats the first exact zero commit marker as the logical end, then verifies that every later marker is also exact zero.
 Any committed or malformed nonzero marker after that gap is corruption, and its payload is not parsed.
 For a nonzero snapshot boundary, replay requires the journal record at that exact sequence and requires its logical time to equal the snapshot logical time.
@@ -105,3 +105,6 @@ Tests use exact ordered event equality as the correctness oracle.
 
 The verifier reads no wall clock and emits one JSON line only after the full replay and invariant check succeed.
 Expectation mismatches and all parse, persistence, apply, and invariant errors return nonzero without partial success JSON.
+Use `--journal-prefix PREFIX` for validated rotated-segment replay and `--journal PATH` for one legacy file.
+The two modes are mutually exclusive.
+Operational recovery steps are in the [persistence recovery runbook](recovery-runbook.md).

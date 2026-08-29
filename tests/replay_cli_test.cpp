@@ -95,12 +95,51 @@ TEST(ReplayCliTest, RejectsMissingAndUnknownArgumentsWithoutStdout) {
   const ProcessResult missing = run_cli({});
   EXPECT_NE(missing.exit_code, 0);
   EXPECT_TRUE(missing.output.empty());
-  EXPECT_EQ(missing.error, "matching_engine_replay: missing --journal\n");
+  EXPECT_EQ(missing.error,
+            "matching_engine_replay: exactly one of --journal or --journal-prefix is required\n");
 
   const ProcessResult unknown = run_cli({"--wat"});
   EXPECT_NE(unknown.exit_code, 0);
   EXPECT_TRUE(unknown.output.empty());
   EXPECT_EQ(unknown.error, "matching_engine_replay: unknown option --wat\n");
+}
+
+TEST(ReplayCliTest, ReplaysValidatedRotatedSegmentPrefix) {
+  TemporaryDirectory temporary;
+  const auto prefix = temporary.path() / "commands";
+  auto journal = RotatingJournal::create(prefix, 1U);
+  ASSERT_TRUE(journal.has_value());
+  ASSERT_EQ(journal->append({CommandPayload::submit_limit(OrderId{7U}, Side::buy, Price{101},
+                                                              Quantity{4U}),
+                              Sequence{1U}, 9U}),
+            JournalError::none);
+  ASSERT_EQ(journal->append({CommandPayload::submit_limit(OrderId{8U}, Side::sell, Price{104},
+                                                              Quantity{2U}),
+                              Sequence{2U}, 10U}),
+            JournalError::none);
+  ASSERT_EQ(journal->close(), JournalError::none);
+
+  const ProcessResult result = run_cli(
+      {"--journal-prefix", prefix.string(), "--min", "100", "--max", "104", "--tick", "1",
+       "--max-orders", "2", "--max-quantity", "10"});
+
+  EXPECT_EQ(result.exit_code, 0);
+  EXPECT_TRUE(result.error.empty());
+  EXPECT_EQ(result.output, "{\"format_version\":1,\"commands_applied\":2,\"first_sequence\":1,"
+                           "\"last_sequence\":2,\"event_count\":2,\"event_bytes\":128,"
+                           "\"crc32c\":\"8c3e4ed0\",\"live_orders\":2,\"best_bid\":101,"
+                           "\"best_ask\":104,\"snapshot_sequence\":0}\n");
+}
+
+TEST(ReplayCliTest, RejectsBothJournalInputModes) {
+  const ProcessResult result =
+      run_cli({"--journal", "commands.journal", "--journal-prefix", "commands", "--min", "0",
+               "--max", "0", "--tick", "1", "--max-orders", "0", "--max-quantity", "1"});
+
+  EXPECT_NE(result.exit_code, 0);
+  EXPECT_TRUE(result.output.empty());
+  EXPECT_EQ(result.error,
+            "matching_engine_replay: exactly one of --journal or --journal-prefix is required\n");
 }
 
 TEST(ReplayCliTest, FullReplayEmitsStableJsonAndChecksExpectations) {

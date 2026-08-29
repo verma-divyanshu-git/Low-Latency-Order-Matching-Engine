@@ -112,7 +112,7 @@ A synchronization failure after marker publication returns `commit_indeterminate
 The writer is then poisoned and refuses every append until it is closed and reopened so recovery can determine whether the record is present.
 The implementation does not rewrite the marker to manufacture certainty after a failed commit synchronization.
 
-Recovery scans from slot zero and requires sequences `1, 2, ...`, nondecreasing logical time, valid CRC, canonical payload bytes, and zero reserved bytes.
+Recovery scans from slot zero and requires sequences `base, base + 1, ...`, nondecreasing logical time, valid CRC, canonical payload bytes, and zero reserved bytes.
 It stops only at an exact zero marker.
 A malformed committed record is corruption and recovery stops with an error.
 Recovery never skips a committed corrupt record and does not trust a header count.
@@ -130,10 +130,13 @@ An inherited child receives `wrong_process` before `append` can touch mapped byt
 A child may close its local inherited mapping and descriptor, but that path performs no synchronization on behalf of the parent.
 There is no concurrent append support.
 Indexed reads return decoded command values, not views into the mapping.
+`RotatingJournal::resume` validates the complete canonical segment set, closes earlier segments, and adopts only the final segment.
+A full final segment rotates on the next valid append, while an existing empty successor accepts that append directly.
 
 ## Operational policy
 
 Treat journal corruption as a stop condition requiring operator investigation and recovery from an independently trusted source.
+Follow the [persistence recovery runbook](recovery-runbook.md) after an unclean shutdown or indeterminate persistence result.
 Do not rewrite, skip, or guess past corruption.
 Protect the containing directory as well as the `0600` file.
 Capacity exhaustion is explicit and requires planned rotation in a future snapshot and compaction phase.

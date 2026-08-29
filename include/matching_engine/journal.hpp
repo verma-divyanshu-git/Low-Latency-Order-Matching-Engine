@@ -139,6 +139,9 @@ public:
   [[nodiscard]] Sequence base_sequence() const noexcept {
     return Sequence{base_sequence_};
   }
+  [[nodiscard]] std::uint64_t last_logical_time() const noexcept {
+    return last_logical_time_;
+  }
   [[nodiscard]] bool full() const noexcept {
     return size_ == capacity_;
   }
@@ -162,11 +165,15 @@ private:
   bool writer_poisoned_{};
 };
 
+enum class JournalSetError : std::uint8_t;
+
 class RotatingJournal {
 public:
   [[nodiscard]] static std::expected<RotatingJournal, JournalOpenFailure>
   create(const std::filesystem::path& path_prefix, std::uint64_t segment_capacity,
          Sequence base_sequence = Sequence{1U}) noexcept;
+  [[nodiscard]] static std::expected<RotatingJournal, JournalSetError>
+  resume(const std::filesystem::path& path_prefix) noexcept;
 
   RotatingJournal(const RotatingJournal&) = delete;
   RotatingJournal& operator=(const RotatingJournal&) = delete;
@@ -233,6 +240,7 @@ public:
   [[nodiscard]] const std::filesystem::path& path(std::size_t index) const noexcept {
     return paths_[index];
   }
+  [[nodiscard]] std::expected<MmapJournal, JournalSetError> release_last() noexcept;
 
 private:
   JournalSegmentSet(std::vector<std::filesystem::path> paths,

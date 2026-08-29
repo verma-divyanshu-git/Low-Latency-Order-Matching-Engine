@@ -10,6 +10,19 @@
 namespace matching_engine {
 namespace {
 
+#if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
+thread_local std::optional<replay_testing::CompactionFailurePoint> compaction_failure;
+
+bool should_fail_compaction(replay_testing::CompactionFailurePoint point) noexcept {
+  if (compaction_failure != point) {
+    return false;
+  }
+  compaction_failure.reset();
+  errno = EIO;
+  return true;
+}
+#endif
+
 void write_u32(std::span<std::byte> bytes, std::size_t offset, std::uint32_t value) noexcept {
   for (std::size_t index = 0; index < 4U; ++index) {
     bytes[offset + index] = static_cast<std::byte>((value >> (index * 8U)) & 0xffU);
@@ -47,6 +60,12 @@ bool valid_event_type(EngineEventType type) noexcept {
 }
 
 } // namespace
+
+#if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
+void replay_testing::fail_compaction_once(CompactionFailurePoint point) noexcept {
+  compaction_failure = point;
+}
+#endif
 
 EventCodecError encode_engine_event(const EngineEvent& event,
                                     std::span<std::byte> output) noexcept {
@@ -375,7 +394,11 @@ compact_journal_segments(const std::filesystem::path& path_prefix,
       return JournalCompactionError::io_error;
     }
     std::error_code error;
-    if (!std::filesystem::remove(journals->path(index), error) || error) {
+    if (
+  #if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
+      should_fail_compaction(replay_testing::CompactionFailurePoint::unlink) ||
+  #endif
+      !std::filesystem::remove(journals->path(index), error) || error) {
       return JournalCompactionError::io_error;
     }
   }
@@ -395,7 +418,11 @@ compact_journal_segments(const std::filesystem::path& path_prefix,
   if (descriptor < 0) {
     return JournalCompactionError::commit_indeterminate;
   }
-  const bool sync_failed = ::fsync(descriptor) != 0;
+    const bool sync_failed =
+  #if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
+    should_fail_compaction(replay_testing::CompactionFailurePoint::parent_fsync) ||
+  #endif
+    ::fsync(descriptor) != 0;
   const bool close_failed = ::close(descriptor) != 0;
   return sync_failed || close_failed ? JournalCompactionError::commit_indeterminate
                                      : JournalCompactionError::none;

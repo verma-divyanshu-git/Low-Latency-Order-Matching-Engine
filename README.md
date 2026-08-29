@@ -85,6 +85,7 @@ The core target does not link measurement or persistence code, and `ENGINE_BUILD
 Applications opt into command persistence by linking `matching_engine::persistence`.
 The [journaling guide](docs/journaling.md) specifies canonical bytes, append-before-apply ordering, recovery, and durability limits.
 The [snapshot and replay guide](docs/snapshots-and-replay.md) specifies snapshot bytes, atomic replacement, restore validation, and verifier behavior.
+The [persistence recovery runbook](docs/recovery-runbook.md) specifies crash recovery, rotated replay, writer resume, and compaction handling.
 The [pipeline guide](docs/pipeline.md) specifies SPSC memory ordering, stage ownership, backpressure, poisoning, snapshots, shutdown, and benchmark interpretation.
 
 ## Benchmark contract
