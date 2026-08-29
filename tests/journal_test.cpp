@@ -157,6 +157,105 @@ TEST(JournalTest, CreateAppendCloseReopenAndRead) {
   EXPECT_EQ(reopened->append(command(4, 12)), JournalError::full);
 }
 
+TEST(JournalTest, PersistsNonDefaultBaseSequenceAcrossRecovery) {
+  TemporaryDirectory temporary;
+  const auto path = temporary.path() / "rotated.journal";
+  auto created = MmapJournal::create(path, 3U, Sequence{41U});
+  ASSERT_TRUE(created.has_value());
+  EXPECT_EQ(created->base_sequence(), Sequence{41U});
+  EXPECT_EQ(created->append(command(40U, 1U)), JournalError::sequence_discontinuity);
+  EXPECT_EQ(created->append(command(41U, 1U)), JournalError::none);
+  EXPECT_EQ(created->append(command(42U, 2U)), JournalError::none);
+  ASSERT_EQ(created->close(), JournalError::none);
+
+  auto reopened = MmapJournal::open(path);
+  ASSERT_TRUE(reopened.has_value());
+  EXPECT_EQ(reopened->base_sequence(), Sequence{41U});
+  EXPECT_EQ(reopened->size(), 2U);
+  EXPECT_EQ(*reopened->read(0U), command(41U, 1U));
+  EXPECT_EQ(*reopened->read(1U), command(42U, 2U));
+  EXPECT_EQ(reopened->append(command(43U, 3U)), JournalError::none);
+}
+
+TEST(JournalTest, RejectsInvalidBaseSequenceAndSequenceRangeOverflow) {
+  TemporaryDirectory temporary;
+  EXPECT_EQ(MmapJournal::create(temporary.path() / "zero.journal", 1U, Sequence{0U})
+                .error()
+                .operation,
+            JournalError::invalid_base_sequence);
+  EXPECT_EQ(MmapJournal::create(temporary.path() / "overflow.journal", 2U,
+                                Sequence{std::numeric_limits<std::uint64_t>::max()})
+                .error()
+                .operation,
+            JournalError::invalid_base_sequence);
+}
+
+TEST(JournalTest, OpensVersionOneHeaderWithImplicitBaseSequenceOne) {
+  TemporaryDirectory temporary;
+  const auto path = temporary.path() / "legacy.journal";
+  auto created = MmapJournal::create(path, 1U);
+  ASSERT_TRUE(created.has_value());
+  ASSERT_EQ(created->append(command(1U, 1U)), JournalError::none);
+  ASSERT_EQ(created->close(), JournalError::none);
+  overwrite_byte(path, 8U, std::byte{1U});
+  for (std::uint64_t offset = 28U; offset < 36U; ++offset) {
+    overwrite_byte(path, offset, std::byte{0U});
+  }
+
+  auto reopened = MmapJournal::open(path);
+  ASSERT_TRUE(reopened.has_value());
+  EXPECT_EQ(reopened->base_sequence(), Sequence{1U});
+  EXPECT_EQ(*reopened->read(0U), command(1U, 1U));
+}
+
+TEST(JournalTest, RejectsZeroBaseSequenceInVersionTwoHeader) {
+  TemporaryDirectory temporary;
+  const auto path = temporary.path() / "invalid-base.journal";
+  auto created = MmapJournal::create(path, 1U);
+  ASSERT_TRUE(created.has_value());
+  ASSERT_EQ(created->close(), JournalError::none);
+  for (std::uint64_t offset = kJournalBaseSequenceOffset;
+       offset < kJournalBaseSequenceOffset + 8U; ++offset) {
+    overwrite_byte(path, offset, std::byte{0U});
+  }
+
+  EXPECT_EQ(MmapJournal::open(path).error().operation, JournalError::invalid_header);
+}
+
+TEST(RotatingJournalTest, CreatesDeterministicContiguousSegments) {
+  TemporaryDirectory temporary;
+  const auto prefix = temporary.path() / "commands";
+  auto rotating = RotatingJournal::create(prefix, 2U, Sequence{10U});
+  ASSERT_TRUE(rotating.has_value());
+  EXPECT_EQ(rotating->active_base_sequence(), Sequence{10U});
+  EXPECT_EQ(rotating->append(command(10U, 5U)), JournalError::none);
+  EXPECT_EQ(rotating->append(command(11U, 5U)), JournalError::none);
+  EXPECT_EQ(rotating->append(command(13U, 6U)), JournalError::sequence_discontinuity);
+  EXPECT_EQ(rotating->segment_count(), 1U);
+  EXPECT_EQ(rotating->append(command(12U, 4U)), JournalError::decreasing_logical_time);
+  EXPECT_EQ(rotating->segment_count(), 1U);
+  EXPECT_EQ(rotating->append(command(12U, 6U)), JournalError::none);
+  EXPECT_EQ(rotating->active_base_sequence(), Sequence{12U});
+  EXPECT_EQ(rotating->segment_count(), 2U);
+  ASSERT_EQ(rotating->close(), JournalError::none);
+
+  const auto first_path = RotatingJournal::segment_path(prefix, Sequence{10U});
+  const auto second_path = RotatingJournal::segment_path(prefix, Sequence{12U});
+  ASSERT_TRUE(first_path.has_value());
+  ASSERT_TRUE(second_path.has_value());
+  auto first = MmapJournal::open(*first_path);
+  auto second = MmapJournal::open(*second_path);
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(second.has_value());
+  EXPECT_EQ(first->base_sequence(), Sequence{10U});
+  EXPECT_EQ(first->size(), 2U);
+  EXPECT_EQ(*first->read(0U), command(10U, 5U));
+  EXPECT_EQ(*first->read(1U), command(11U, 5U));
+  EXPECT_EQ(second->base_sequence(), Sequence{12U});
+  EXPECT_EQ(second->size(), 1U);
+  EXPECT_EQ(*second->read(0U), command(12U, 6U));
+}
+
 TEST(JournalTest, RetainsExclusiveNonblockingOwnershipUntilClose) {
   TemporaryDirectory temporary;
   const auto path = temporary.path() / "commands.journal";

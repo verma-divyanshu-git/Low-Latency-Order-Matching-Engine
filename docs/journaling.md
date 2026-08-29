@@ -42,14 +42,18 @@ The matching core does not read wall time, use random numbers, access files, use
 All integers are little-endian.
 Native structures, padding, and pointers are never serialized.
 
-The file header is 64 bytes:
+The current v2 file header is 64 bytes:
 
 - Offset 0, 8 bytes: magic `MEJNL4A\0`.
-- Offset 8, 4 bytes: format version, currently 1.
+- Offset 8, 4 bytes: format version, currently 2.
 - Offset 12, 4 bytes: header size, 64.
 - Offset 16, 4 bytes: record size, 80.
 - Offset 20, 8 bytes: fixed record capacity.
-- Offset 28, 36 bytes: reserved zeros.
+- Offset 28, 8 bytes: nonzero base sequence.
+- Offset 36, 28 bytes: reserved zeros.
+
+Format v1 remains readable and assigns implicit base sequence 1.
+For base sequence $B$, record index $i$ must carry sequence $B + i$.
 
 Each record is 80 bytes:
 
@@ -79,6 +83,14 @@ Directory descriptors use close-on-exec, directory-only opening where available,
 After synchronizing the initialized mapping and file, creation synchronizes that retained parent descriptor before reporting success so the directory entry is included in the durability request.
 Failed-create removal uses `unlinkat` on the same retained descriptor, so renaming the parent or placing a replacement directory at the original pathname cannot redirect creation, synchronization, or cleanup to the replacement.
 Earlier parent path components are still resolved by the operating system while the parent directory is opened.
+
+## Rotation
+
+`RotatingJournal` uses deterministic names `<prefix>.<20-digit-base>.journal`.
+It validates the next command before rotation.
+When a segment is full, it closes that segment before exclusively creating the successor at the next required sequence.
+It never overwrites an existing segment.
+Old segments remain until snapshot-driven compaction proves they are obsolete.
 This implementation does not perform component-by-component `openat` traversal, so directory permissions remain required to constrain concurrent replacement during that initial resolution.
 The implementation supports macOS and Linux.
 
