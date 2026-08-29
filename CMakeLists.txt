@@ -38,6 +38,7 @@ add_library(
   src/mbp_publisher.cpp
   src/pipeline.cpp
   src/replay.cpp
+  src/runtime_config.cpp
   src/snapshot.cpp)
 add_library(matching_engine::persistence ALIAS matching_engine_persistence)
 target_include_directories(
@@ -185,6 +186,7 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
     src/mbp_publisher.cpp
     src/pipeline.cpp
     src/replay.cpp
+    src/runtime_config.cpp
     src/snapshot.cpp)
   target_include_directories(
     matching_engine_persistence_test
@@ -200,6 +202,7 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
     tests/mbo_publisher_test.cpp
     tests/mbp_publisher_test.cpp
     tests/pipeline_test.cpp
+    tests/runtime_config_test.cpp
     tests/snapshot_replay_test.cpp)
   target_compile_definitions(
     matching_engine_persistence_tests PRIVATE MATCHING_ENGINE_TEST_FAILPOINTS)

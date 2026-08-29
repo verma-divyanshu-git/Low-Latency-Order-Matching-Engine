@@ -146,6 +146,9 @@ Phase 5 completed on 2026-08-29 in PRs #40, #41, and #42.
 Add strict configuration parsing, startup and shutdown behavior, off-hot-path structured reporting, health states, deterministic fault injection, packaging targets, API-version compatibility tests, threat modeling, and resource-limit documentation.
 Keep authentication, authorization, and real-money claims out of scope.
 
+Strict complete runtime configuration parsing, cross-field resource validation, and runtime API compatibility are implemented on `feat/runtime-config`.
+Focused coverage passes 6 of 6 tests.
+
 ### Phase 7: measured optimization
 
 Run only after host qualification is understood.

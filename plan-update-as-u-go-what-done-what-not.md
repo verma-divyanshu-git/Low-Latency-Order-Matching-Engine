@@ -22,7 +22,8 @@ Last updated: 2026-08-29.
 
 ### In progress
 
-- Phase 6 production operation boundaries are next.
+- Phase 6 strict runtime configuration and API compatibility are implemented on `feat/runtime-config`.
+- Focused config and compatibility coverage passes 6 of 6 tests.
 
 ### Not started
 
