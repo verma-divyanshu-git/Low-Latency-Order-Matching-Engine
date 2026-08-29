@@ -27,11 +27,15 @@ Last updated: 2026-08-29.
 - Runtime lifecycle, graceful shutdown, health-state escalation, bounded counters, and off-hot-path structured reporting are implemented on `feat/runtime-operations`.
 - PR #45 merged runtime lifecycle, health, graceful shutdown, and structured reporting at `b03c337`.
 - Deterministic status fault schedules and a 100,000-cycle control-plane soak are implemented on `test/runtime-reliability`.
-- Focused reliability coverage passes 3 of 3 tests.
+- PR #46 merged deterministic fault schedules and soak coverage at `a7f9068`.
+- CMake install/export/package targets, external consumer compatibility tests, threat modeling, resource limits, and corrected scope documentation are implemented on `feat/package-security-boundaries`.
+- Phase 6 implementation is complete locally: strict config, lifecycle, graceful drain, structured reporting, health states, deterministic fault injection, soak coverage, API compatibility, install/export/package targets, threat model, and resource-limit documentation are present.
+- The final Phase 6 branch passes 297 of 297 debug tests, including installed-package consumer compilation, and builds binary and source TGZ packages.
 
 ### Not started
 
-- Phases 6, 7, 8, 9, and 10 are not started.
+- Phase 6 needs final package/security PR integration, green CI, and branch deletion.
+- Phases 7, 8, 9, and 10 are not started.
 
 ## Detailed execution history
 
@@ -69,6 +73,12 @@ Last updated: 2026-08-29.
 - Verified after merge: all 5 focused rotation and compaction recovery-window tests and all 7 replay CLI tests pass on `main`.
 - Phase 5 is complete.
 - Next: begin Phase 6 production operation boundaries one concern at a time.
+- Done: PR #44 merged strict runtime configuration and API compatibility into `main` at `b16d4b2`; all seven CI jobs passed.
+- Done: PR #45 merged runtime lifecycle, graceful drain, health states, saturating counters, and fixed-schema reporting into `main` at `b03c337`; all seven CI jobs passed.
+- Done: PR #46 merged deterministic status fault schedules and 100,000-cycle soak coverage into `main` at `a7f9068`; all seven CI jobs passed.
+- Implemented: standard CMake install and exported targets, package config and version files, replay executable installation, CPack binary and source TGZ generation, and an external installed-package consumer test.
+- Documented: runtime configuration, operations, reliability testing, packaging, threat model, resource limits, and explicit exclusions for authentication, authorization, cryptographic integrity, replication, regulation, and real-money use.
+- Verified: the final Phase 6 branch passes 297 of 297 debug tests and generates both binary and source packages.
 
 - Done: `develop` now exists on `origin` from current `main`.
 - Done: local identity hooks require Divyanshu's personal commit identity and the approved GitHub account.

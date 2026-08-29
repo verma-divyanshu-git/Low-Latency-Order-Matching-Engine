@@ -15,6 +15,9 @@ This volunteer project cannot promise a response or remediation deadline.
 
 ## Current scope
 
-The repository currently contains only Phase 0 build and documentation infrastructure.
-There is no deployed service or production matching engine to secure.
-Future code should be treated as experimental until the project explicitly documents a supported release.
+The repository contains an experimental matching engine library, durable journal and snapshot recovery, replay tools, strict runtime configuration, and operational health primitives.
+It does not contain a deployed service, network transport, authentication, authorization, account controls, encrypted storage, cryptographic file authentication, or real-money trading safeguards.
+Treat every build as experimental until a tagged release explicitly documents support.
+
+The [threat model](docs/threat-model.md) defines protected properties, trust boundaries, addressed threats, operator responsibilities, and exclusions.
+The [resource limits](docs/resource-limits.md) define hard capacity ceilings and expected failure behavior.

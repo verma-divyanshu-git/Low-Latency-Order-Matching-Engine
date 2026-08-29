@@ -7,6 +7,8 @@ project(
   LANGUAGES CXX)
 
 include(CTest)
+include(CMakePackageConfigHelpers)
+include(GNUInstallDirs)
 include(cmake/ProjectOptions.cmake)
 engine_validate_options()
 
@@ -25,6 +27,7 @@ add_library(
   src/runtime_controls.cpp
   src/sequenced_engine.cpp)
 add_library(matching_engine::core ALIAS matching_engine_core)
+set_target_properties(matching_engine_core PROPERTIES EXPORT_NAME core)
 target_include_directories(
   matching_engine_core
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -42,6 +45,7 @@ add_library(
   src/runtime_operations.cpp
   src/snapshot.cpp)
 add_library(matching_engine::persistence ALIAS matching_engine_persistence)
+set_target_properties(matching_engine_persistence PROPERTIES EXPORT_NAME persistence)
 target_include_directories(
   matching_engine_persistence
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -52,6 +56,30 @@ engine_configure_target(matching_engine_persistence)
 add_executable(matching_engine_replay src/replay_cli.cpp)
 target_link_libraries(matching_engine_replay PRIVATE matching_engine::persistence)
 engine_configure_target(matching_engine_replay)
+
+install(
+  TARGETS matching_engine_core matching_engine_persistence matching_engine_replay
+  EXPORT matching_engineTargets
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(DIRECTORY include/matching_engine DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(
+  EXPORT matching_engineTargets
+  NAMESPACE matching_engine::
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/matching_engine)
+configure_package_config_file(
+  cmake/matching_engineConfig.cmake.in
+  ${CMAKE_CURRENT_BINARY_DIR}/matching_engineConfig.cmake
+  INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/matching_engine)
+write_basic_package_version_file(
+  ${CMAKE_CURRENT_BINARY_DIR}/matching_engineConfigVersion.cmake
+  VERSION ${PROJECT_VERSION}
+  COMPATIBILITY SameMajorVersion)
+install(
+  FILES ${CMAKE_CURRENT_BINARY_DIR}/matching_engineConfig.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/matching_engineConfigVersion.cmake
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/matching_engine)
+install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/matching_engine)
 
 if(PROJECT_IS_TOP_LEVEL)
   set(ENGINE_BUILD_TESTS_DEFAULT ON)
@@ -224,6 +252,13 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
   add_dependencies(matching_engine_replay_cli_tests matching_engine_replay)
   engine_configure_target(matching_engine_replay_cli_tests)
   gtest_discover_tests(matching_engine_replay_cli_tests)
+  add_test(
+    NAME install_package_test
+    COMMAND
+      ${CMAKE_COMMAND}
+      -DENGINE_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+      -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/verify_install.cmake)
 
   if(ENGINE_BUILD_BENCHMARKS)
     add_executable(
@@ -240,6 +275,13 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
     gtest_discover_tests(matching_engine_measurement_tests)
   endif()
 endif()
+
+set(CPACK_PACKAGE_NAME "matching-engine")
+set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
+set(CPACK_GENERATOR "TGZ")
+set(CPACK_SOURCE_GENERATOR "TGZ")
+set(CPACK_SOURCE_IGNORE_FILES "/build/;/.git/;crash-[0-9a-f]+")
+include(CPack)
 
 if(ENGINE_ENABLE_FUZZING)
   add_executable(order_book_fuzz tests/fuzz/order_book_fuzz.cpp)

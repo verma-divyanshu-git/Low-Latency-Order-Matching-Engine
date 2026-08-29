@@ -151,7 +151,10 @@ PR #44 merged that concern at `b16d4b2`; all seven CI jobs passed.
 Runtime lifecycle, graceful drain, health-state escalation, saturating counters, and fixed-schema off-hot-path reporting are implemented on `feat/runtime-operations`.
 PR #45 merged that concern at `b03c337`; all seven CI jobs passed.
 Deterministic public-status fault schedules and a 100,000-cycle control-plane soak are implemented on `test/runtime-reliability`.
-Focused reliability coverage passes 3 of 3 tests.
+PR #46 merged that concern at `a7f9068`; all seven CI jobs passed.
+CMake install/export/package targets, an external installed-package consumer test, threat modeling, resource limits, and corrected scope documentation are implemented on `feat/package-security-boundaries`.
+The final Phase 6 branch passes 297 of 297 debug tests, including installed-package consumer compilation, and generates binary and source TGZ packages.
+Every Phase 6 implementation requirement is complete locally; only final PR integration, green CI, and branch deletion remain.
 
 ### Phase 7: measured optimization
 
