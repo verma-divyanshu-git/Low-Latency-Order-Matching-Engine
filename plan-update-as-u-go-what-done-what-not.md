@@ -24,7 +24,8 @@ Last updated: 2026-08-29.
 
 ### In progress
 
-- Phase 7 measured optimization and Phase 8 host qualification are next.
+- Phase 7 equivalent price-index comparison harness is implemented on `feat/benchmark-alternatives`.
+- The harness compares ladder plus bitmap, `std::map`, sorted vector, and pinned Abseil `btree_map` with identical operations and checksum validation.
 
 ### Not started
 

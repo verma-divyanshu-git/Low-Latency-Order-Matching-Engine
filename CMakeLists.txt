@@ -105,6 +105,26 @@ if(ENGINE_BUILD_BENCHMARKS)
     GIT_SHALLOW FALSE)
   FetchContent_MakeAvailable(hdr_histogram)
 
+  set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
+  set(ABSL_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    abseil
+    GIT_REPOSITORY https://github.com/abseil/abseil-cpp.git
+    GIT_TAG 20240116.2
+    GIT_SHALLOW TRUE)
+  FetchContent_GetProperties(abseil)
+  if(NOT abseil_POPULATED)
+    if(POLICY CMP0169)
+      cmake_policy(PUSH)
+      cmake_policy(SET CMP0169 OLD)
+    endif()
+    FetchContent_Populate(abseil)
+    if(POLICY CMP0169)
+      cmake_policy(POP)
+    endif()
+    add_subdirectory(${abseil_SOURCE_DIR} ${abseil_BINARY_DIR} EXCLUDE_FROM_ALL)
+  endif()
+
   add_library(matching_engine_measurement STATIC src/clock_probe_cli.cpp src/measurement.cpp)
   add_library(matching_engine::measurement ALIAS matching_engine_measurement)
   target_include_directories(
@@ -131,6 +151,16 @@ if(ENGINE_BUILD_BENCHMARKS)
   target_link_libraries(matching_engine_throughput_gate PRIVATE matching_engine::core)
   engine_configure_target(matching_engine_throughput_gate)
 
+  add_library(matching_engine_benchmark_comparison STATIC src/benchmark_comparison.cpp)
+  add_library(matching_engine::benchmark_comparison ALIAS matching_engine_benchmark_comparison)
+  target_include_directories(
+    matching_engine_benchmark_comparison
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  target_link_libraries(
+    matching_engine_benchmark_comparison
+    PRIVATE matching_engine::core absl::btree)
+  engine_configure_target(matching_engine_benchmark_comparison)
+
   add_executable(clock_probe src/clock_probe.cpp)
   target_link_libraries(clock_probe PRIVATE matching_engine::measurement)
   engine_configure_target(clock_probe)
@@ -150,6 +180,10 @@ if(ENGINE_BUILD_BENCHMARKS)
   add_executable(order_book_throughput_gate src/order_book_throughput_gate.cpp)
   target_link_libraries(order_book_throughput_gate PRIVATE matching_engine::throughput_gate)
   engine_configure_target(order_book_throughput_gate)
+
+  add_executable(benchmark_comparison src/benchmark_comparison_cli.cpp)
+  target_link_libraries(benchmark_comparison PRIVATE matching_engine::benchmark_comparison)
+  engine_configure_target(benchmark_comparison)
   if(BUILD_TESTING)
     add_test(
       NAME order_book_throughput_gate_e2e
@@ -267,13 +301,15 @@ if(BUILD_TESTING AND ENGINE_BUILD_TESTS)
     add_executable(
       matching_engine_measurement_tests
       tests/benchmark_test.cpp
+      tests/benchmark_comparison_test.cpp
       tests/clock_probe_cli_test.cpp
       tests/measurement_review_test.cpp
       tests/measurement_test.cpp
       tests/throughput_gate_test.cpp)
     target_link_libraries(
       matching_engine_measurement_tests
-      PRIVATE matching_engine::benchmark matching_engine::throughput_gate GTest::gtest_main)
+      PRIVATE matching_engine::benchmark matching_engine::benchmark_comparison
+              matching_engine::throughput_gate GTest::gtest_main)
     engine_configure_target(matching_engine_measurement_tests)
     gtest_discover_tests(matching_engine_measurement_tests)
   endif()

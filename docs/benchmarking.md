@@ -6,6 +6,7 @@ An unsafe clock fails the run.
 A safe but non-publication-qualified clock still writes artifacts, prints the exact refusal reason, exits successfully, and labels the result `regression_only`.
 The macOS steady-clock fallback is always regression-only.
 Phase 3C host evidence and the separate batch-throughput CI regression gate are documented in [the host qualification guide](host-qualification.md).
+Equivalent price-index alternatives are documented in [the comparison guide](benchmark-alternatives.md).
 
 ## Build
 

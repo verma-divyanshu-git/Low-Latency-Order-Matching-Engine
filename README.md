@@ -130,6 +130,7 @@ Future benchmark reports will:
 - [Order book fuzzing](docs/fuzzing.md)
 - [Measurement clock self-check](docs/measurement.md)
 - [Order-book benchmarking methodology](docs/benchmarking.md)
+- [Price-level index comparison](docs/benchmark-alternatives.md)
 - [Linux host qualification and CI throughput gate](docs/host-qualification.md)
 - [Deterministic sequencing and command journaling](docs/journaling.md)
 - [Versioned snapshots and deterministic replay](docs/snapshots-and-replay.md)

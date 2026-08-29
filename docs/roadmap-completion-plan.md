@@ -165,6 +165,8 @@ Establish qualified baselines and compare equivalent semantics against `std::map
 Record accepted and rejected hypotheses with retained artifacts.
 Do not remove validation to improve a benchmark.
 
+An equivalent regression-only price-index comparison harness for ladder plus bitmap, `std::map`, sorted vector, and pinned Abseil `btree_map` is implemented on `feat/benchmark-alternatives`.
+
 ### Phase 8: free-host qualification and artifacts
 
 Use the best free, no-card host available at the time.
