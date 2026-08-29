@@ -62,4 +62,12 @@ TEST(CommandProtocolTest, RoundTripsFullWidthStopTriggerPrices) {
   }
 }
 
+TEST(CommandProtocolTest, RoundTripsCanonicalOpeningUncross) {
+  const CommandPayload payload = CommandPayload::uncross_opening_auction();
+  std::array<std::byte, kEncodedCommandFrameSize> encoded{};
+
+  ASSERT_EQ(encode_command_frame(payload, encoded), CommandFrameError{});
+  EXPECT_EQ(decode_command_frame(encoded), payload);
+}
+
 } // namespace matching_engine

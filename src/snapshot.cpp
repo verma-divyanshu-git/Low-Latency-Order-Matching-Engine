@@ -17,6 +17,7 @@ namespace {
 constexpr std::array<std::byte, 8U> kMagic{std::byte{'M'}, std::byte{'E'}, std::byte{'S'},
                                            std::byte{'N'}, std::byte{'A'}, std::byte{'P'},
                                            std::byte{'4'}, std::byte{0}};
+constexpr std::size_t kLegacySnapshotHeaderSize = 112U;
 constexpr std::size_t kChecksumOffset = 96U;
 constexpr std::size_t kHeaderReservedOffset = 100U;
 constexpr unsigned kTempAttempts = 16U;
@@ -245,6 +246,9 @@ public:
     write_u64(bytes, 100U,
           static_cast<std::uint64_t>(book.last_execution_price_.value_or(Price{0}).ticks()));
     write_u32(bytes, 108U, book.last_execution_price_.has_value() ? 1U : 0U);
+        write_u32(bytes, 112U, static_cast<std::uint32_t>(book.allocation_mode_));
+        write_u32(bytes, 116U, book.pro_rata_minimum_);
+        write_u32(bytes, 120U, static_cast<std::uint32_t>(book.trading_state_));
     for (std::uint32_t index = 0; index < book.arena_.capacity_; ++index) {
       const auto& slot = book.arena_.slots_[index];
       const std::size_t offset =
@@ -275,7 +279,7 @@ public:
   }
 
   static std::expected<DecodedSnapshot, SnapshotError> decode(std::span<const std::byte> bytes) {
-    if (bytes.size() < kSnapshotHeaderSize) {
+    if (bytes.size() < kLegacySnapshotHeaderSize) {
       return std::unexpected{SnapshotError::invalid_length};
     }
     for (std::size_t index = 0; index < kMagic.size(); ++index) {
@@ -284,31 +288,43 @@ public:
       }
     }
     const std::uint32_t version = read_u32(bytes, 8U);
-    if (version != 1U && version != 2U && version != 3U &&
+    if (version != 1U && version != 2U && version != 3U && version != 4U && version != 5U &&
       version != kSnapshotFormatVersion) {
       return std::unexpected{SnapshotError::unsupported_version};
+    }
+    const std::size_t header_size = version == kSnapshotFormatVersion
+                      ? kSnapshotHeaderSize
+                      : (version == 5U ? 120U : kLegacySnapshotHeaderSize);
+    if (bytes.size() < header_size) {
+      return std::unexpected{SnapshotError::invalid_length};
     }
     const std::size_t slot_size = version == 1U ? 48U : (version == 2U ? 56U :
                      (version == 3U ? 72U : kSnapshotSlotSize));
     const std::uint32_t self_trade_policy = read_u32(bytes, 20U);
-    if (read_u32(bytes, 12U) != kSnapshotHeaderSize || read_u32(bytes, 16U) != slot_size ||
+    const std::uint32_t allocation_mode = version < 5U ? 0U : read_u32(bytes, 112U);
+    const std::uint32_t pro_rata_minimum = version < 5U ? 0U : read_u32(bytes, 116U);
+    const std::uint32_t trading_state = version < 6U ? 0U : read_u32(bytes, 120U);
+    if (read_u32(bytes, 12U) != header_size || read_u32(bytes, 16U) != slot_size ||
         (version == 1U && self_trade_policy != 0U) ||
         (version >= 2U && self_trade_policy > static_cast<std::uint32_t>(SelfTradePolicy::cancel_taker)) ||
         (version < 4U &&
-         !zero(bytes.subspan(kHeaderReservedOffset, kSnapshotHeaderSize - kHeaderReservedOffset))) ||
-        (version == 4U &&
+         !zero(bytes.subspan(kHeaderReservedOffset,
+                             kLegacySnapshotHeaderSize - kHeaderReservedOffset))) ||
+        (version >= 4U &&
          (read_u32(bytes, 108U) > 1U ||
-          (read_u32(bytes, 108U) == 0U && read_u64(bytes, 100U) != 0U)))) {
+          (read_u32(bytes, 108U) == 0U && read_u64(bytes, 100U) != 0U))) ||
+        allocation_mode > static_cast<std::uint32_t>(AllocationMode::threshold_pro_rata) ||
+        trading_state > static_cast<std::uint32_t>(TradingState::opening_auction)) {
       return std::unexpected{SnapshotError::invalid_header};
     }
     const std::uint32_t capacity = read_u32(bytes, 48U);
     if (capacity > kMaximumSnapshotSlots ||
         static_cast<std::size_t>(capacity) >
-            (std::numeric_limits<std::size_t>::max() - kSnapshotHeaderSize) / slot_size) {
+            (std::numeric_limits<std::size_t>::max() - header_size) / slot_size) {
       return std::unexpected{SnapshotError::file_too_large};
     }
     const std::size_t expected =
-        kSnapshotHeaderSize + static_cast<std::size_t>(capacity) * slot_size;
+        header_size + static_cast<std::size_t>(capacity) * slot_size;
     if (bytes.size() != expected || read_u64(bytes, 24U) != expected) {
       return std::unexpected{SnapshotError::invalid_length};
     }
@@ -324,7 +340,11 @@ public:
     if (live_count > capacity) {
       return std::unexpected{SnapshotError::live_count_mismatch};
     }
-    if (max_quantity == 0U) {
+    if (max_quantity == 0U ||
+      (allocation_mode == static_cast<std::uint32_t>(AllocationMode::fifo) &&
+       pro_rata_minimum != 0U) ||
+      (allocation_mode == static_cast<std::uint32_t>(AllocationMode::threshold_pro_rata) &&
+       (pro_rata_minimum == 0U || pro_rata_minimum > max_quantity))) {
       return std::unexpected{SnapshotError::invalid_configuration};
     }
     const std::uint64_t next_sequence = read_u64(bytes, 64U);
@@ -342,10 +362,12 @@ public:
       auto engine = std::make_unique<SequencedEngine>(
           PriceDomain{Price{static_cast<std::int64_t>(read_u64(bytes, 32U))}, tick_count}, capacity,
           Quantity{max_quantity}, Sequence{next_sequence}, last_time,
-          static_cast<SelfTradePolicy>(self_trade_policy));
+          static_cast<SelfTradePolicy>(self_trade_policy),
+          static_cast<AllocationMode>(allocation_mode), Quantity{pro_rata_minimum},
+          static_cast<TradingState>(trading_state));
       engine->sequence_exhausted_ = exhausted == 1U;
       OrderBook& book = engine->order_book_;
-      if (version == 4U && read_u32(bytes, 108U) == 1U) {
+      if (version >= 4U && read_u32(bytes, 108U) == 1U) {
         book.last_execution_price_ = Price{static_cast<std::int64_t>(read_u64(bytes, 100U))};
       }
       book.arena_.size_ = live_count;
@@ -353,7 +375,7 @@ public:
       std::uint32_t observed_live{};
       for (std::uint32_t index = 0; index < capacity; ++index) {
         const std::size_t offset =
-            kSnapshotHeaderSize + static_cast<std::size_t>(index) * slot_size;
+            header_size + static_cast<std::size_t>(index) * slot_size;
         auto& slot = book.arena_.slots_[index];
         slot.generation = read_u32(bytes, offset);
         slot.free_next = read_u32(bytes, offset + 4U);
@@ -586,7 +608,7 @@ std::expected<DecodedSnapshot, SnapshotError> decode_snapshot(std::span<const st
 
 #if defined(MATCHING_ENGINE_TEST_FAILPOINTS)
 void rewrite_snapshot_crc_for_testing(std::span<std::byte> bytes) noexcept {
-  if (bytes.size() >= kSnapshotHeaderSize) {
+  if (bytes.size() >= kLegacySnapshotHeaderSize) {
     write_u32(bytes, kChecksumOffset, snapshot_crc(bytes));
   }
 }
@@ -717,7 +739,7 @@ std::expected<DecodedSnapshot, SnapshotError> load_snapshot(const std::filesyste
   } else if (before.st_size < 0 ||
              static_cast<std::uint64_t>(before.st_size) > kMaximumSnapshotBytes) {
     error = SnapshotError::file_too_large;
-  } else if (static_cast<std::uint64_t>(before.st_size) < kSnapshotHeaderSize) {
+  } else if (static_cast<std::uint64_t>(before.st_size) < kLegacySnapshotHeaderSize) {
     error = SnapshotError::invalid_length;
   }
   std::vector<std::byte> bytes;

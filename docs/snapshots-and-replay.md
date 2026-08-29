@@ -11,8 +11,8 @@ Price levels, occupancy bitmaps, aggregate quantities, and invariant visit marks
 Restore builds a private candidate engine, validates the free list and live FIFO graph, rebuilds levels and occupancy, and publishes the engine only after the structural invariant checker succeeds.
 
 The format is little-endian.
-The header is 112 bytes and each slot record is 48 bytes.
-At most 1,000,000 slots are accepted, making the maximum snapshot size 48,000,112 bytes.
+The current v6 header is 124 bytes and each slot record is 96 bytes.
+At most 1,000,000 slots are accepted, making the maximum snapshot size 96,000,124 bytes.
 The core also accepts at most 1,000,000 price levels and rejects a larger domain before allocating level arrays.
 At the limit, the two `PriceLevel` arrays occupy about 48 MB on the supported ABI, plus bounded occupancy summaries and the independently bounded order arena.
 This ceiling bounds memory amplification from CLI arguments and untrusted snapshot headers.
@@ -21,10 +21,10 @@ It also makes a level aggregate overflow structurally impossible because at most
 The header layout is:
 
 - Bytes 0-7: `MESNAP4\0`.
-- Bytes 8-11: version 1.
-- Bytes 12-15: header size 112.
-- Bytes 16-19: slot size 48.
-- Bytes 20-23: reserved zero.
+- Bytes 8-11: version 6.
+- Bytes 12-15: header size 124.
+- Bytes 16-19: slot size 96.
+- Bytes 20-23: self-trade policy.
 - Bytes 24-31: exact total byte length.
 - Bytes 32-39: signed minimum price ticks.
 - Bytes 40-43: price-domain tick count.
@@ -38,14 +38,22 @@ The header layout is:
 - Bytes 80-87: snapshot sequence.
 - Bytes 88-95: snapshot logical time.
 - Bytes 96-99: CRC32C.
-- Bytes 100-111: reserved zero.
+- Bytes 100-107: optional last execution price ticks.
+- Bytes 108-111: last execution price presence flag.
+- Bytes 112-115: allocation mode.
+- Bytes 116-119: pro-rata minimum quantity.
+- Bytes 120-123: trading state.
 
 CRC32C covers every file byte except bytes 96-99 that contain the checksum itself.
 CRC32C detects accidental corruption and is explicitly non-cryptographic.
 It is not collision resistant, does not authenticate a file, and must not be used as a security decision.
 
-Each slot stores generation at bytes 0-3, free-next at 4-7, liveness at 8, reserved zeros at 9-11, order ID at 12-19, remaining quantity at 20-27, previous and next indexes at 28-35, encoded level and side at 36-39, order reserved flags at 40-43, and reserved zeros at 44-47.
-For a dead slot, bytes 12-47 are zero.
+Each slot stores generation at bytes 0-3, free-next at 4-7, liveness at 8, reserved zeros at 9-11, order ID at 12-19, remaining quantity at 20-27, previous and next indexes at 28-35, encoded level and side at 36-39, and order flags at 40-43.
+Bytes 44-47 are reserved zero.
+Trader ID is at bytes 48-55, display quantity at 56-63, displayed remaining at 64-71, stop trigger and limit prices at 72-87, and stop-list links at 88-95.
+For a dead slot, bytes 12-95 are zero.
+Decoding remains backward compatible with versions 1 through 5.
+Versions before v5 default to FIFO allocation, and versions before v6 default to continuous trading.
 
 ## Atomic persistence
 

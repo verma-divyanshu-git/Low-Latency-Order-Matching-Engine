@@ -68,11 +68,37 @@ enum class RejectReason : std::uint8_t {
   post_only_would_cross,
   self_trade_prevented,
   invalid_display_quantity,
+  invalid_trading_state,
 };
 
 enum class SelfTradePolicy : std::uint8_t {
   none,
   cancel_taker,
+};
+
+enum class AllocationMode : std::uint8_t {
+  fifo,
+  threshold_pro_rata,
+};
+
+enum class TradingState : std::uint8_t {
+  continuous,
+  opening_auction,
+};
+
+enum class AuctionError : std::uint8_t {
+  none,
+  not_opening_auction,
+  insufficient_trade_capacity,
+};
+
+struct AuctionResult {
+  AuctionError error{AuctionError::none};
+  std::optional<Price> clearing_price;
+  Quantity executed_quantity{0U};
+  std::uint32_t trade_count{};
+
+  constexpr bool operator==(const AuctionResult&) const noexcept = default;
 };
 
 struct SubmitResult {
@@ -168,13 +194,17 @@ static_assert(std::is_trivially_copyable_v<StopActivation>);
 static_assert(std::is_trivially_copyable_v<CancelResult>);
 static_assert(std::is_trivially_copyable_v<AmendResult>);
 static_assert(std::is_trivially_copyable_v<InvariantResult>);
+static_assert(std::is_trivially_copyable_v<AuctionResult>);
 
 // OrderBook has one owning matching thread. Duplicate OrderId checks belong at
 // the gateway; the matcher deliberately carries no hot-path identifier map.
 class OrderBook {
 public:
   OrderBook(PriceDomain domain, std::size_t max_orders, Quantity max_order_quantity,
-            SelfTradePolicy self_trade_policy = SelfTradePolicy::none);
+            SelfTradePolicy self_trade_policy = SelfTradePolicy::none,
+            AllocationMode allocation_mode = AllocationMode::fifo,
+            Quantity pro_rata_minimum = Quantity{2U},
+            TradingState trading_state = TradingState::continuous);
 
   OrderBook(const OrderBook&) = delete;
   OrderBook& operator=(const OrderBook&) = delete;
@@ -210,6 +240,7 @@ public:
   [[nodiscard]] AmendResult amend_quantity(Handle handle, Quantity new_remaining) noexcept;
   [[nodiscard]] SubmitResult replace(Handle handle, Price new_price, Quantity new_quantity,
                                      std::span<Trade> trades) noexcept;
+  [[nodiscard]] AuctionResult uncross_opening_auction(std::span<Trade> trades) noexcept;
   [[nodiscard]] RejectReason preflight_limit(Side side, Price price, Quantity quantity,
                                              TimeInForce time_in_force) const noexcept;
   [[nodiscard]] RejectReason preflight_post_only(Side side, Price price,
@@ -234,12 +265,24 @@ public:
   [[nodiscard]] std::size_t dormant_stop_count() const noexcept {
     return dormant_stop_count_;
   }
+  [[nodiscard]] AllocationMode allocation_mode() const noexcept {
+    return allocation_mode_;
+  }
+  [[nodiscard]] Quantity pro_rata_minimum() const noexcept {
+    return Quantity{pro_rata_minimum_};
+  }
+  [[nodiscard]] TradingState trading_state() const noexcept {
+    return trading_state_;
+  }
   [[nodiscard]] InvariantResult check_invariants() noexcept;
 
 private:
   friend class detail::SnapshotCodec;
   [[nodiscard]] static PriceDomain checked_domain(PriceDomain domain);
   [[nodiscard]] static std::uint32_t checked_max_quantity(Quantity quantity);
+  [[nodiscard]] static std::uint32_t checked_pro_rata_minimum(AllocationMode allocation_mode,
+                                                              Quantity minimum,
+                                                              std::uint32_t maximum);
   [[nodiscard]] RejectReason preflight(Side side, Quantity quantity) const noexcept;
   [[nodiscard]] bool can_fully_fill(Side side, std::uint32_t limit_index,
                                     std::uint64_t quantity) const noexcept;
@@ -256,6 +299,20 @@ private:
                    std::uint32_t level_index,
                    std::uint64_t& remaining, std::span<Trade> trades,
                    std::uint32_t& trade_count) noexcept;
+  void match_level_fifo(OrderId taker_id, TraderId taker_trader_id, Side taker_side,
+                        std::uint32_t level_index, std::uint64_t& remaining,
+                        std::span<Trade> trades, std::uint32_t& trade_count) noexcept;
+  void match_level_threshold_pro_rata(OrderId taker_id, TraderId taker_trader_id,
+                                      Side taker_side, std::uint32_t level_index,
+                                      std::uint64_t& remaining, std::span<Trade> trades,
+                                      std::uint32_t& trade_count) noexcept;
+  void execute_match(OrderId taker_id, Side taker_side, std::uint32_t level_index,
+                     std::uint32_t maker_index, std::uint64_t execution,
+                     std::uint64_t& remaining, std::span<Trade> trades,
+                     std::uint32_t& trade_count) noexcept;
+  void execute_auction_match(std::uint32_t bid_index, std::uint32_t ask_index,
+                             Price clearing_price, std::uint64_t execution,
+                             std::span<Trade> trades, std::uint32_t& trade_count) noexcept;
   [[nodiscard]] bool stop_is_triggered(Side side, Price trigger_price) const noexcept;
   [[nodiscard]] Handle rest_stop(OrderId id, Side side, Price trigger_price,
                                  std::optional<Price> limit_price,
@@ -308,6 +365,9 @@ private:
   std::size_t stop_activation_count_{};
   std::optional<Price> last_execution_price_;
   SelfTradePolicy self_trade_policy_;
+  AllocationMode allocation_mode_;
+  std::uint32_t pro_rata_minimum_;
+  TradingState trading_state_;
   std::unique_ptr<std::uint32_t[]> trade_report_indices_;
   std::unique_ptr<std::uint32_t[]> trade_report_epochs_;
   std::uint32_t trade_report_epoch_{};

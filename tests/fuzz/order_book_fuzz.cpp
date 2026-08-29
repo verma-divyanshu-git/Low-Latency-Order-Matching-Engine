@@ -293,9 +293,15 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   }
   const std::size_t bounded_size = std::min(size, kMaxInputBytes);
   ByteReader reader{{data, bounded_size}};
+  const TradingState trading_state = size != 0U && (data[0] & 1U) != 0U
+                                         ? TradingState::opening_auction
+                                         : TradingState::continuous;
   OrderBook engine{PriceDomain{Price{kMinimumPrice}, kTickCount}, kCapacity,
-                   Quantity{kMaxQuantity}};
-  ReferenceOrderBook model{Price{kMinimumPrice}, kTickCount, kCapacity, Quantity{kMaxQuantity}};
+                   Quantity{kMaxQuantity}, SelfTradePolicy::none, AllocationMode::fifo,
+                   Quantity{2U}, trading_state};
+  ReferenceOrderBook model{Price{kMinimumPrice}, kTickCount, kCapacity, Quantity{kMaxQuantity},
+                           SelfTradePolicy::none, AllocationMode::fifo, Quantity{2U},
+                           trading_state};
   std::array<Trade, kCapacity> trade_storage{};
   std::vector<TrackedOrder> tracked;
   tracked.reserve(kMaxCommands);
@@ -306,6 +312,16 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     execute(reader, OrderId{next_id++}, engine, model, trade_storage, tracked);
     compare_state(engine, model, tracked);
     ++command_count;
+  }
+  if (trading_state == TradingState::opening_auction) {
+    const AuctionResult engine_result = engine.uncross_opening_auction(trade_storage);
+    const ModelAuctionResult model_result = model.uncross_opening_auction(kCapacity);
+    require(engine_result == model_result.result);
+    require(engine_result.trade_count == model_result.trades.size());
+    for (std::size_t index = 0U; index < model_result.trades.size(); ++index) {
+      require(trade_storage[index] == model_result.trades[index]);
+    }
+    compare_state(engine, model, tracked);
   }
   return 0;
 }

@@ -21,6 +21,7 @@ enum class CommandType : std::uint8_t {
   submit_iceberg = 6U,
   submit_stop = 7U,
   submit_stop_limit = 8U,
+  uncross_opening_auction = 9U,
 };
 
 enum class CommandValidationError : std::uint8_t {
@@ -139,6 +140,10 @@ struct CommandPayload {
     const std::uint64_t bits = static_cast<std::uint64_t>(handle_index) |
                                (static_cast<std::uint64_t>(handle_generation) << 32U);
     return Price{std::bit_cast<std::int64_t>(bits)};
+  }
+
+  [[nodiscard]] static constexpr CommandPayload uncross_opening_auction() noexcept {
+    return {.tag = CommandType::uncross_opening_auction};
   }
 
   constexpr bool operator==(const CommandPayload&) const noexcept = default;
