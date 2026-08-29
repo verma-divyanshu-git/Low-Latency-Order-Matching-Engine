@@ -208,6 +208,11 @@ Tag only after every condition holds.
 The automated pre-release gate is implemented on `chore/release-readiness`.
 It checks all local presets, deterministic recovery, packages, evidence claims, identity, clean-tree state, and local and remote branch policy, then writes a checksum report.
 The release tag remains blocked by Phase 8 host qualification.
+PR #53 merged release readiness automation at `5d6b519`; all seven CI jobs passed.
+The complete local gate passed 24 sequential executable checks with zero errors.
+Clean `main` passes evidence, identity, synchronization, worktree, and exact `main` plus `develop` branch-policy checks.
+Every Phase 10 gate that does not require Phase 8 is complete.
+Only qualified host evidence and the final release tag remain blocked.
 
 ## Execution order
 
