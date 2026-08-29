@@ -35,3 +35,4 @@ A new record supersedes a decision when the architecture changes.
 - [ADR-0026: Strict runtime configuration and API compatibility](0026-strict-runtime-configuration.md)
 - [ADR-0027: Runtime lifecycle and health reporting](0027-runtime-lifecycle-and-health.md)
 - [ADR-0028: Installable operational boundary](0028-installable-operational-boundary.md)
+- [ADR-0029: Equivalent price-index comparison benchmark](0029-equivalent-price-index-benchmark.md)
