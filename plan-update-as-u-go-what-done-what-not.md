@@ -21,15 +21,13 @@ Last updated: 2026-08-29.
 - Phase 5 is complete in PRs #40, #41, and #42; final recovery operations merged at `9a20576`.
 - Phase 6 strict configuration, lifecycle, graceful drain, health reporting, reliability coverage, API compatibility, packaging, threat modeling, and resource boundaries are merged.
 - Phase 6 is complete in PRs #44, #45, #46, and #47; final package and security boundaries merged at `e88c9a5`.
+- Phase 7 measured optimization is complete in PRs #49 and #50.
+- Phase 7 retained equivalent comparison, full-engine sweep, manifest, and rejected-hypothesis evidence; the measured decision is to keep the production ladder.
 
 ### In progress
 
-- Phase 7 equivalent price-index comparison harness is implemented on `feat/benchmark-alternatives`.
-- The harness compares ladder plus bitmap, `std::map`, sorted vector, and pinned Abseil `btree_map` with identical operations and checksum validation.
-- PR #49 merged the comparison harness at `36a024c`.
-- The regression-only campaign retains comparison artifacts at 64, 4,096, and 65,536 active levels, crossing and three-level rate sweeps through 1M requested events per second, and a live Darwin arm64 nonqualification report.
-- The ladder leads every isolated comparison; no production hot-path change is justified.
-- Phase 8 has no qualified latency result because the current Mac report is explicitly `qualified: false`; no CI or Mac latency claim will be published.
+- Phase 8 host qualification remains open.
+- The current free no-card host attempt is a retained live Darwin arm64 report with `qualified: false`; no CI or Mac latency claim will be published.
 
 ### Not started
 
@@ -86,6 +84,10 @@ Last updated: 2026-08-29.
 - Rejected: replacing the ladder, adding branch hints, enabling huge pages, or adding PGO/BOLT without qualified full-engine evidence.
 - Captured: both full-engine scenarios at six requested rates and a live macOS arm64 host report.
 - Qualification result: `qualified: false`; every artifact remains regression-only and operation latency remains below measurement resolution.
+- Done: PR #50 merged the retained optimization campaign, full-engine sweeps, host nonqualification report, artifact contract tests, and rejected-hypothesis record into `main` at `8ca9151`; all seven CI jobs passed.
+- Verified: 298 of 298 debug tests and 365 of 365 measurement tests pass with the retained artifact contract.
+- Phase 7 is complete with no production hot-path change.
+- Next: obtain a genuinely qualified free x86 Linux host for Phase 8, or leave latency claims absent and proceed only with regression evidence.
 
 - Done: `develop` now exists on `origin` from current `main`.
 - Done: local identity hooks require Divyanshu's personal commit identity and the approved GitHub account.

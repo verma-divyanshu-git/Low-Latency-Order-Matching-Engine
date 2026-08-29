@@ -170,6 +170,9 @@ PR #49 merged that harness at `36a024c`; all seven CI jobs passed.
 A retained Darwin arm64 regression-only campaign compares 64, 4,096, and 65,536 active levels and runs both full-engine scenarios through 1M requested events per second.
 The ladder leads every isolated comparison, so no production index change is justified.
 The live host report is explicitly nonqualified and every operation-latency point is below resolution.
+PR #50 merged the retained campaign and artifact contract at `8ca9151`; all seven CI jobs passed.
+The debug catalog passes 298 of 298 tests and the measurement catalog passes 365 of 365 tests.
+Phase 7 completed on 2026-08-29 in PRs #49 and #50 with the measured decision to keep the production ladder.
 
 ### Phase 8: free-host qualification and artifacts
 
@@ -182,6 +185,7 @@ Require an independent second run before publication.
 
 The current live macOS arm64 report is retained with `qualified: false`.
 No qualified latency number exists, and no Mac or CI latency will be published.
+Phase 8 remains open until a genuinely qualifiable free x86 Linux host is available.
 
 ### Phase 9: evidence-driven README
 
