@@ -131,7 +131,9 @@ Add crash-point tests for rotation, rename, truncation, and compaction.
 Document recovery and retain the CRC32C limitation as accidental-corruption detection only.
 
 Journal format v2 base-sequence semantics and deterministic bounded rotation are implemented on `feat/journal-rotation`.
-The focused journal v2 and rotation suite passes 5 of 5 tests.
+PR #40 merged that concern at `323fb1a`; all seven CI jobs passed.
+Snapshot-driven whole-segment compaction, validated canonical segment discovery, and deterministic multi-segment replay are implemented on `feat/snapshot-journal-compaction`.
+The focused segment discovery, compacted replay, and compaction suite passes 11 of 11 tests.
 
 ### Phase 6: operation boundaries
 

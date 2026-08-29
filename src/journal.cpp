@@ -5,6 +5,8 @@
 #endif
 
 #include <array>
+#include <algorithm>
+#include <charconv>
 #include <cerrno>
 #include <fcntl.h>
 #include <limits>
@@ -986,6 +988,109 @@ JournalError RotatingJournal::close() noexcept {
     active_.reset();
   }
   return result;
+}
+
+const char* journal_set_error_message(JournalSetError error) noexcept {
+  switch (error) {
+  case JournalSetError::none:
+    return "none";
+  case JournalSetError::invalid_path:
+    return "invalid journal segment prefix";
+  case JournalSetError::io_error:
+    return "journal segment I/O error";
+  case JournalSetError::malformed_segment_name:
+    return "malformed journal segment name";
+  case JournalSetError::no_segments:
+    return "no journal segments";
+  case JournalSetError::journal_open:
+    return "journal segment failed validation";
+  case JournalSetError::sequence_gap:
+    return "journal segment sequence gap";
+  case JournalSetError::sequence_overlap:
+    return "journal segment sequence overlap";
+  case JournalSetError::nonfinal_partial_segment:
+    return "non-final journal segment is partial";
+  }
+  return "unknown journal segment error";
+}
+
+JournalSegmentSet::JournalSegmentSet(std::vector<std::filesystem::path> paths,
+                                     std::vector<MmapJournal> segments) noexcept
+    : paths_{std::move(paths)}, segments_{std::move(segments)} {}
+
+std::expected<JournalSegmentSet, JournalSetError>
+JournalSegmentSet::open(const std::filesystem::path& path_prefix) noexcept {
+  try {
+    const std::filesystem::path basename = path_prefix.filename();
+    if (path_prefix.empty() || basename.empty() || basename == "." || basename == "..") {
+      return std::unexpected{JournalSetError::invalid_path};
+    }
+    std::filesystem::path parent = path_prefix.parent_path();
+    if (parent.empty()) {
+      parent = ".";
+    }
+    const std::string name_prefix = basename.string() + ".";
+    constexpr std::string_view suffix = ".journal";
+    std::vector<std::pair<std::uint64_t, std::filesystem::path>> candidates;
+    for (const auto& entry : std::filesystem::directory_iterator(parent)) {
+      const std::string name = entry.path().filename().string();
+      if (!name.starts_with(name_prefix) || !name.ends_with(suffix)) {
+        continue;
+      }
+      const std::size_t digits_begin = name_prefix.size();
+      const std::size_t digits_size = name.size() - digits_begin - suffix.size();
+      if (digits_size != 20U) {
+        return std::unexpected{JournalSetError::malformed_segment_name};
+      }
+      std::uint64_t base{};
+      const char* const begin = name.data() + digits_begin;
+      const char* const end = begin + digits_size;
+      const auto parsed = std::from_chars(begin, end, base);
+      if (parsed.ec != std::errc{} || parsed.ptr != end || base == 0U) {
+        return std::unexpected{JournalSetError::malformed_segment_name};
+      }
+      candidates.emplace_back(base, entry.path());
+    }
+    if (candidates.empty()) {
+      return std::unexpected{JournalSetError::no_segments};
+    }
+    std::sort(candidates.begin(), candidates.end(), [](const auto& left, const auto& right) {
+      return left.first < right.first;
+    });
+
+    std::vector<std::filesystem::path> paths;
+    std::vector<MmapJournal> segments;
+    paths.reserve(candidates.size());
+    segments.reserve(candidates.size());
+    for (const auto& [named_base, path] : candidates) {
+      auto segment = MmapJournal::open(path);
+      if (!segment.has_value()) {
+        return std::unexpected{JournalSetError::journal_open};
+      }
+      if (segment->base_sequence().value() != named_base) {
+        return std::unexpected{JournalSetError::malformed_segment_name};
+      }
+      if (!segments.empty()) {
+        MmapJournal& previous = segments.back();
+        const std::uint64_t expected =
+            previous.base_sequence().value() + previous.size();
+        if (!previous.full()) {
+          return std::unexpected{JournalSetError::nonfinal_partial_segment};
+        }
+        if (named_base < expected) {
+          return std::unexpected{JournalSetError::sequence_overlap};
+        }
+        if (named_base > expected) {
+          return std::unexpected{JournalSetError::sequence_gap};
+        }
+      }
+      paths.push_back(path);
+      segments.push_back(std::move(*segment));
+    }
+    return JournalSegmentSet{std::move(paths), std::move(segments)};
+  } catch (...) {
+    return std::unexpected{JournalSetError::io_error};
+  }
 }
 
 } // namespace matching_engine

@@ -256,6 +256,81 @@ TEST(RotatingJournalTest, CreatesDeterministicContiguousSegments) {
   EXPECT_EQ(*second->read(0U), command(12U, 6U));
 }
 
+TEST(JournalSegmentSetTest, OpensAndSortsCanonicalContiguousSegments) {
+  TemporaryDirectory temporary;
+  const auto prefix = temporary.path() / "commands";
+  auto rotating = RotatingJournal::create(prefix, 2U);
+  ASSERT_TRUE(rotating.has_value());
+  ASSERT_EQ(rotating->append(command(1U, 1U)), JournalError::none);
+  ASSERT_EQ(rotating->append(command(2U, 2U)), JournalError::none);
+  ASSERT_EQ(rotating->append(command(3U, 3U)), JournalError::none);
+  ASSERT_EQ(rotating->close(), JournalError::none);
+
+  auto segments = JournalSegmentSet::open(prefix);
+  ASSERT_TRUE(segments.has_value());
+  ASSERT_EQ(segments->size(), 2U);
+  EXPECT_EQ(segments->segment(0U).base_sequence(), Sequence{1U});
+  EXPECT_EQ(segments->segment(1U).base_sequence(), Sequence{3U});
+  EXPECT_EQ(*segments->segment(1U).read(0U), command(3U, 3U));
+}
+
+TEST(JournalSegmentSetTest, RejectsGapBetweenFullSegments) {
+  TemporaryDirectory temporary;
+  const auto prefix = temporary.path() / "commands";
+  auto first = MmapJournal::create(*RotatingJournal::segment_path(prefix, Sequence{1U}), 2U);
+  ASSERT_TRUE(first.has_value());
+  ASSERT_EQ(first->append(command(1U, 1U)), JournalError::none);
+  ASSERT_EQ(first->append(command(2U, 2U)), JournalError::none);
+  ASSERT_EQ(first->close(), JournalError::none);
+  auto second = MmapJournal::create(*RotatingJournal::segment_path(prefix, Sequence{4U}), 1U,
+                                    Sequence{4U});
+  ASSERT_TRUE(second.has_value());
+  ASSERT_EQ(second->close(), JournalError::none);
+
+  EXPECT_EQ(JournalSegmentSet::open(prefix).error(), JournalSetError::sequence_gap);
+}
+
+TEST(JournalSegmentSetTest, RejectsOverlappingSegments) {
+  TemporaryDirectory temporary;
+  const auto prefix = temporary.path() / "commands";
+  auto first = MmapJournal::create(*RotatingJournal::segment_path(prefix, Sequence{1U}), 2U);
+  ASSERT_TRUE(first.has_value());
+  ASSERT_EQ(first->append(command(1U, 1U)), JournalError::none);
+  ASSERT_EQ(first->append(command(2U, 2U)), JournalError::none);
+  ASSERT_EQ(first->close(), JournalError::none);
+  auto second = MmapJournal::create(*RotatingJournal::segment_path(prefix, Sequence{2U}), 1U,
+                                    Sequence{2U});
+  ASSERT_TRUE(second.has_value());
+  ASSERT_EQ(second->close(), JournalError::none);
+
+  EXPECT_EQ(JournalSegmentSet::open(prefix).error(), JournalSetError::sequence_overlap);
+}
+
+TEST(JournalSegmentSetTest, RejectsPartialNonFinalSegment) {
+  TemporaryDirectory temporary;
+  const auto prefix = temporary.path() / "commands";
+  auto first = MmapJournal::create(*RotatingJournal::segment_path(prefix, Sequence{1U}), 2U);
+  ASSERT_TRUE(first.has_value());
+  ASSERT_EQ(first->append(command(1U, 1U)), JournalError::none);
+  ASSERT_EQ(first->close(), JournalError::none);
+  auto second = MmapJournal::create(*RotatingJournal::segment_path(prefix, Sequence{2U}), 1U,
+                                    Sequence{2U});
+  ASSERT_TRUE(second.has_value());
+  ASSERT_EQ(second->close(), JournalError::none);
+
+  EXPECT_EQ(JournalSegmentSet::open(prefix).error(),
+            JournalSetError::nonfinal_partial_segment);
+}
+
+TEST(JournalSegmentSetTest, RejectsMalformedMatchingSegmentName) {
+  TemporaryDirectory temporary;
+  const auto prefix = temporary.path() / "commands";
+  std::ofstream{temporary.path() / "commands.12.journal"} << "not a segment";
+
+  EXPECT_EQ(JournalSegmentSet::open(prefix).error(),
+            JournalSetError::malformed_segment_name);
+}
+
 TEST(JournalTest, RetainsExclusiveNonblockingOwnershipUntilClose) {
   TemporaryDirectory temporary;
   const auto path = temporary.path() / "commands.journal";

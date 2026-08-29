@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <optional>
 #include <span>
+#include <vector>
 
 namespace matching_engine {
 
@@ -194,6 +195,51 @@ private:
   std::optional<MmapJournal> active_;
   std::uint64_t segment_count_{1U};
   std::uint64_t last_logical_time_{};
+};
+
+enum class JournalSetError : std::uint8_t {
+  none,
+  invalid_path,
+  io_error,
+  malformed_segment_name,
+  no_segments,
+  journal_open,
+  sequence_gap,
+  sequence_overlap,
+  nonfinal_partial_segment,
+};
+
+[[nodiscard]] const char* journal_set_error_message(JournalSetError error) noexcept;
+
+class JournalSegmentSet {
+public:
+  [[nodiscard]] static std::expected<JournalSegmentSet, JournalSetError>
+  open(const std::filesystem::path& path_prefix) noexcept;
+
+  JournalSegmentSet(const JournalSegmentSet&) = delete;
+  JournalSegmentSet& operator=(const JournalSegmentSet&) = delete;
+  JournalSegmentSet(JournalSegmentSet&&) noexcept = default;
+  JournalSegmentSet& operator=(JournalSegmentSet&&) noexcept = default;
+
+  [[nodiscard]] std::size_t size() const noexcept {
+    return segments_.size();
+  }
+  [[nodiscard]] MmapJournal& segment(std::size_t index) noexcept {
+    return segments_[index];
+  }
+  [[nodiscard]] const MmapJournal& segment(std::size_t index) const noexcept {
+    return segments_[index];
+  }
+  [[nodiscard]] const std::filesystem::path& path(std::size_t index) const noexcept {
+    return paths_[index];
+  }
+
+private:
+  JournalSegmentSet(std::vector<std::filesystem::path> paths,
+                    std::vector<MmapJournal> segments) noexcept;
+
+  std::vector<std::filesystem::path> paths_;
+  std::vector<MmapJournal> segments_;
 };
 
 } // namespace matching_engine
