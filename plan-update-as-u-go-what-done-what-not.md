@@ -28,11 +28,12 @@ Last updated: 2026-08-29.
 
 - Phase 8 host qualification remains open.
 - The current free no-card host attempt is a retained live Darwin arm64 report with `qualified: false`; no CI or Mac latency claim will be published.
-- Phase 9 evidence-driven README work is implemented on `docs/evidence-readme` with generated technical SVGs, manifest-linked regression evidence, reproduction commands, and design alternatives.
+- Phase 9 evidence-driven README is merged in PR #52 at `7ff39a8` with generated technical SVGs, manifest-linked regression evidence, reproduction commands, and design alternatives.
+- Phase 10 pre-release automation is implemented on `chore/release-readiness`; final tagging remains blocked by Phase 8 only.
 
 ### Not started
 
-- Phase 10 is not started.
+- No implementation phase other than Phase 8 host qualification remains.
 
 ## Detailed execution history
 
@@ -89,6 +90,8 @@ Last updated: 2026-08-29.
 - Verified: 298 of 298 debug tests and 365 of 365 measurement tests pass with the retained artifact contract.
 - Phase 7 is complete with no production hot-path change.
 - Next: obtain a genuinely qualified free x86 Linux host for Phase 8, or leave latency claims absent and proceed only with regression evidence.
+- Done: PR #52 merged the evidence-driven README and deterministic technical assets into `main` at `7ff39a8`; all seven CI jobs passed.
+- Phase 9 is complete without qualified latency or resume claims.
 
 - Done: `develop` now exists on `origin` from current `main`.
 - Done: local identity hooks require Divyanshu's personal commit identity and the approved GitHub account.

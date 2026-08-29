@@ -135,6 +135,7 @@ Shared CI and the current Mac are regression environments only.
 - [Threat model](docs/threat-model.md)
 - [Resource limits](docs/resource-limits.md)
 - [Installation and packaging](docs/packaging.md)
+- [Release readiness](docs/release-readiness.md)
 
 ## License
 
