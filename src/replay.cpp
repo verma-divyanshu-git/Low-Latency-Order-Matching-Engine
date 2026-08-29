@@ -38,7 +38,8 @@ std::uint64_t read_u64(std::span<const std::byte> bytes, std::size_t offset) noe
 
 bool valid_event_type(EngineEventType type) noexcept {
   return type == EngineEventType::submit_result || type == EngineEventType::trade ||
-         type == EngineEventType::cancel_result || type == EngineEventType::amend_result;
+         type == EngineEventType::cancel_result || type == EngineEventType::amend_result ||
+         type == EngineEventType::stop_triggered;
 }
 
 } // namespace
@@ -156,7 +157,7 @@ replay_journal(MmapJournal& journal, SequencedEngine& engine, Sequence snapshot_
       return std::unexpected{ReplayError::sequence_gap};
     }
   }
-  if (event_buffer.size() < engine.order_book().required_trade_capacity() + 1U) {
+  if (event_buffer.size() < engine.maximum_event_capacity()) {
     return std::unexpected{ReplayError::apply};
   }
   for (std::uint64_t index = snapshot_value; index < journal.size(); ++index) {

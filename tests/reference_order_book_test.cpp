@@ -122,5 +122,45 @@ TEST(ReferenceOrderBookTest, AllowsDifferentTradersUnderCancelTakerPolicy) {
   EXPECT_EQ(matched.trades.front(), (Trade{OrderId{2U}, OrderId{1U}, Price{40}, Quantity{3U}}));
 }
 
+  TEST(ReferenceOrderBookTest, StopsUseLastTradeAndTriggerDeterministicCascades) {
+    ReferenceOrderBook book{Price{0}, 201U, 8U, Quantity{50U}};
+    ASSERT_EQ(book.submit_limit(OrderId{1U}, Side::sell, Price{100}, Quantity{2U},
+                  TimeInForce::gtc, 8U)
+          .reject_reason,
+        RejectReason::none);
+    ASSERT_EQ(book.submit_limit(OrderId{2U}, Side::sell, Price{110}, Quantity{2U},
+                  TimeInForce::gtc, 8U)
+          .reject_reason,
+        RejectReason::none);
+    ASSERT_EQ(book.submit_limit(OrderId{7U}, Side::buy, Price{99}, Quantity{1U},
+                                TimeInForce::gtc, 8U)
+                  .reject_reason,
+              RejectReason::none);
+
+    const ModelSubmitResult buy_stop =
+      book.submit_stop(OrderId{3U}, Side::buy, Price{100}, Quantity{1U}, 8U);
+    ASSERT_TRUE(buy_stop.resting_token.has_value());
+    const ModelSubmitResult sell_stop =
+        book.submit_stop_limit(OrderId{4U}, Side::sell, Price{110}, Price{99}, Quantity{1U}, 8U);
+    ASSERT_TRUE(sell_stop.resting_token.has_value());
+
+    const ModelSubmitResult trigger =
+      book.submit_market(OrderId{5U}, Side::buy, Quantity{2U}, 8U);
+
+    ASSERT_EQ(trigger.trades.size(), 3U);
+    EXPECT_EQ(trigger.trades[0], (Trade{OrderId{5U}, OrderId{1U}, Price{100}, Quantity{2U}}));
+    EXPECT_EQ(trigger.trades[1], (Trade{OrderId{3U}, OrderId{2U}, Price{110}, Quantity{1U}}));
+    EXPECT_EQ(trigger.trades[2], (Trade{OrderId{7U}, OrderId{4U}, Price{99}, Quantity{1U}}));
+    EXPECT_EQ(book.last_execution_price(), Price{99});
+    EXPECT_EQ(book.cancel(*buy_stop.resting_token).reject_reason, CancelReason::invalid_handle);
+    EXPECT_EQ(book.cancel(*sell_stop.resting_token).reject_reason, CancelReason::invalid_handle);
+
+    const ModelSubmitResult immediate =
+      book.submit_stop_limit(OrderId{6U}, Side::buy, Price{90}, Price{98}, Quantity{1U}, 8U);
+    EXPECT_TRUE(immediate.resting_token.has_value());
+    EXPECT_EQ(immediate.unfilled_quantity, Quantity{1U});
+    EXPECT_EQ(book.best_bid(), Price{98});
+  }
+
 } // namespace
 } // namespace matching_engine::test

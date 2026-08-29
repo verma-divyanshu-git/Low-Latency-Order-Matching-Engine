@@ -64,12 +64,27 @@ MarketDataAdapter::adapt(const MarketDataMessage& message) noexcept {
 }
 
 void MarketDataAdapter::record_applied_event(const EngineEvent& event) noexcept {
-  if (event.type == EngineEventType::submit_result) {
+  if (event.type == EngineEventType::submit_result ||
+      event.type == EngineEventType::stop_triggered) {
+    Handle* const existing = find_handle(event.order_id);
     if (event.handle.index == kInvalidIndex) {
+      if (existing != nullptr) {
+        for (std::size_t index = 0U; index < handles_.size(); ++index) {
+          if (handles_[index].id == event.order_id) {
+            handles_[index] = handles_.back();
+            handles_.pop_back();
+            break;
+          }
+        }
+      }
       gateway_.release(event.order_id);
       return;
     }
-    handles_.push_back({event.order_id, event.handle});
+    if (existing != nullptr) {
+      *existing = event.handle;
+    } else {
+      handles_.push_back({event.order_id, event.handle});
+    }
     return;
   }
   if (event.type != EngineEventType::cancel_result || event.reason != 0U) {

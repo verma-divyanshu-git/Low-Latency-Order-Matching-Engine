@@ -19,6 +19,18 @@ namespace {
           .reason = static_cast<std::uint8_t>(result.reject_reason)};
 }
 
+[[nodiscard]] EngineEvent stop_triggered_event(const SequencedCommand& command,
+                 std::uint32_t event_index,
+                 const StopActivation& activation) noexcept {
+  return {.command_sequence = command.sequence,
+    .order_id = activation.order_id,
+    .quantity = activation.executed_quantity,
+    .secondary_quantity = activation.unfilled_quantity,
+    .handle = activation.resting_handle,
+    .event_index = event_index,
+    .type = EngineEventType::stop_triggered};
+}
+
 } // namespace
 
 SequencedEngine::SequencedEngine(PriceDomain domain, std::size_t max_orders,
@@ -35,23 +47,35 @@ SequencedEngine::SequencedEngine(PriceDomain domain, std::size_t max_orders,
 }
 
 std::size_t SequencedEngine::required_event_capacity(const CommandPayload& payload) const noexcept {
+  const std::size_t matching_capacity =
+      trade_capacity_ + 1U + order_book_.dormant_stop_count();
   switch (payload.tag) {
   case CommandType::submit_limit:
     return order_book_.preflight_limit(payload.side, Price{payload.price_ticks},
                                        Quantity{payload.quantity},
                                        payload.time_in_force) == RejectReason::none
-               ? trade_capacity_ + 1U
+               ? matching_capacity
                : 1U;
   case CommandType::submit_market:
     return order_book_.preflight_market(payload.side, Quantity{payload.quantity}) ==
                    RejectReason::none
-               ? trade_capacity_ + 1U
+               ? matching_capacity
                : 1U;
   case CommandType::submit_iceberg:
     return order_book_.preflight_limit(payload.side, Price{payload.price_ticks},
                                        Quantity{payload.quantity}, TimeInForce::gtc) ==
                    RejectReason::none
-               ? trade_capacity_ + 1U
+               ? matching_capacity
+               : 1U;
+  case CommandType::submit_stop:
+    return order_book_.preflight_stop(payload.side, std::nullopt, Quantity{payload.quantity}) ==
+                   RejectReason::none
+               ? matching_capacity + 1U
+               : 1U;
+  case CommandType::submit_stop_limit:
+    return order_book_.preflight_stop(payload.side, Price{payload.price_ticks},
+                                      Quantity{payload.quantity}) == RejectReason::none
+               ? matching_capacity + 1U
                : 1U;
   case CommandType::replace:
     if (order_book_.preflight_replace(Handle{payload.handle_index, payload.handle_generation},
@@ -59,7 +83,7 @@ std::size_t SequencedEngine::required_event_capacity(const CommandPayload& paylo
                                       Quantity{payload.quantity}) != RejectReason::none) {
       return 1U;
     }
-    return std::max<std::size_t>(trade_capacity_, 1U);
+    return trade_capacity_ + order_book_.dormant_stop_count();
   case CommandType::cancel:
   case CommandType::amend_quantity:
     return 1U;
@@ -74,6 +98,11 @@ void SequencedEngine::write_submit_events(const SequencedCommand& command,
   for (std::uint32_t index = 0U; index < result.trade_count; ++index) {
     events[static_cast<std::size_t>(index) + 1U] =
         EngineEvent::trade(command.sequence, index + 1U, trade_scratch_[index]);
+  }
+  std::uint32_t event_index = result.trade_count + 1U;
+  for (const StopActivation& activation : order_book_.stop_activations()) {
+    events[event_index] = stop_triggered_event(command, event_index, activation);
+    ++event_index;
   }
 }
 
@@ -105,14 +134,14 @@ ApplyResult SequencedEngine::apply(const SequencedCommand& command,
         OrderId{payload.order_id}, payload.side, Price{payload.price_ticks},
         Quantity{payload.quantity}, payload.time_in_force, trades);
     write_submit_events(command, result, events);
-    event_count += result.trade_count;
+    event_count += result.trade_count + order_book_.stop_activations().size();
     break;
   }
   case CommandType::submit_market: {
     const SubmitResult result = order_book_.submit_market(OrderId{payload.order_id}, payload.side,
                                                           Quantity{payload.quantity}, trades);
     write_submit_events(command, result, events);
-    event_count += result.trade_count;
+    event_count += result.trade_count + order_book_.stop_activations().size();
     break;
   }
   case CommandType::submit_iceberg: {
@@ -120,7 +149,23 @@ ApplyResult SequencedEngine::apply(const SequencedCommand& command,
         OrderId{payload.order_id}, payload.side, Price{payload.price_ticks},
         Quantity{payload.quantity}, payload.iceberg_display_quantity(), trades);
     write_submit_events(command, result, events);
-    event_count += result.trade_count;
+    event_count += result.trade_count + order_book_.stop_activations().size();
+    break;
+  }
+  case CommandType::submit_stop: {
+    const SubmitResult result = order_book_.submit_stop(
+        OrderId{payload.order_id}, payload.side, payload.stop_trigger_price(),
+        Quantity{payload.quantity}, trades);
+    write_submit_events(command, result, events);
+    event_count += result.trade_count + order_book_.stop_activations().size();
+    break;
+  }
+  case CommandType::submit_stop_limit: {
+    const SubmitResult result = order_book_.submit_stop_limit(
+        OrderId{payload.order_id}, payload.side, payload.stop_trigger_price(),
+        Price{payload.price_ticks}, Quantity{payload.quantity}, trades);
+    write_submit_events(command, result, events);
+    event_count += result.trade_count + order_book_.stop_activations().size();
     break;
   }
   case CommandType::cancel: {
@@ -157,7 +202,7 @@ ApplyResult SequencedEngine::apply(const SequencedCommand& command,
     if (previous.has_value()) {
       events[0].order_id = previous->id;
     }
-    event_count += result.trade_count;
+    event_count += result.trade_count + order_book_.stop_activations().size();
     break;
   }
   }

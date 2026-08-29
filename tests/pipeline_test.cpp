@@ -194,7 +194,7 @@ TEST(PipelineTest, MatchingConstructionRequiresMaximumEventBatchCapacity) {
                std::invalid_argument);
 
   CommandQueue exact_commands{1U};
-  EventQueue exact_events{4U};
+  EventQueue exact_events{7U};
   auto exact_consumer = exact_commands.claim_consumer();
   auto exact_producer = exact_events.claim_producer();
   ASSERT_TRUE(exact_consumer && exact_producer);
@@ -267,7 +267,7 @@ TEST(PipelineIngressStatusTest, DecreasingTimeAndExhaustionDoNotPersistOrPublish
 
 TEST(PipelineTest, OutputBackpressureLeavesInputAndEngineUntouched) {
   PipelineFixture fixture;
-  SpscQueue<EngineEvent> events{4U};
+  SpscQueue<EngineEvent> events{7U};
   auto command_producer = fixture.commands.claim_producer();
   auto command_consumer = fixture.commands.claim_consumer();
   auto event_producer = events.claim_producer();
@@ -275,7 +275,9 @@ TEST(PipelineTest, OutputBackpressureLeavesInputAndEngineUntouched) {
   ASSERT_TRUE(command_producer && command_consumer && event_producer && event_consumer);
   ASSERT_TRUE(command_producer->try_push(
       {CommandPayload::submit_market(OrderId{1U}, Side::buy, Quantity{1U}), Sequence{1U}, 1U}));
-  ASSERT_TRUE(event_producer->try_push({.command_sequence = Sequence{99U}}));
+  for (std::uint64_t sequence = 96U; sequence < 100U; ++sequence) {
+    ASSERT_TRUE(event_producer->try_push({.command_sequence = Sequence{sequence}}));
+  }
   MatchingStage matching{PipelineFixture::make_engine(), std::move(*command_consumer),
                          std::move(*event_producer)};
 
@@ -288,7 +290,7 @@ TEST(PipelineMatchingStatusTest, InvalidCommandAndDecreasingTimePoisonWithoutDro
   const auto run = [](SequencedCommand command, std::uint64_t initial_time,
                       MatchingStatus expected) {
     CommandQueue commands{1U};
-    EventQueue events{2U};
+    EventQueue events{3U};
     auto producer = commands.claim_producer();
     auto consumer = commands.claim_consumer();
     auto event_producer = events.claim_producer();
@@ -378,7 +380,7 @@ TEST(PipelineThreadedTest, MixedValidWorkloadMatchesReferenceExactly) {
   constexpr std::size_t max_orders = 16U;
   Sequencer reference_sequencer;
   SequencedEngine reference{PriceDomain{Price{100}, 5U}, max_orders, Quantity{100U}};
-  std::array<EngineEvent, max_orders + 1U> reference_scratch{};
+  std::array<EngineEvent, (max_orders * 2U) + 1U> reference_scratch{};
   std::vector<CommandPayload> payloads;
   std::vector<EngineEvent> expected;
   std::vector<Handle> retired_handles;
@@ -442,7 +444,7 @@ TEST(PipelineThreadedTest, MixedValidWorkloadMatchesReferenceExactly) {
 
   PipelineTemporaryDirectory temporary;
   CommandQueue commands{32U};
-  EventQueue events{32U};
+  EventQueue events{33U};
   auto journal = MmapJournal::create(temporary.path() / "commands.journal", payloads.size());
   ASSERT_TRUE(journal);
   auto command_producer = commands.claim_producer();
@@ -567,7 +569,7 @@ TEST(PipelineThreadedTest, MixedValidWorkloadMatchesReferenceExactly) {
 
 TEST(PipelineThreadedTest, InjectedMatcherFailureStopsPeersAndDrainsPublishedEvents) {
   CommandQueue commands{1U};
-  EventQueue events{2U};
+  EventQueue events{3U};
   auto command_producer = commands.claim_producer();
   auto command_consumer = commands.claim_consumer();
   auto event_producer = events.claim_producer();

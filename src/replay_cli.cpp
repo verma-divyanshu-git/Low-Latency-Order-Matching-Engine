@@ -231,7 +231,7 @@ int main(int argc, char** argv) {
   if (!journal.has_value()) {
     return fail(journal_error_message(journal.error().operation));
   }
-  std::vector<EngineEvent> events(engine->order_book().required_trade_capacity() + 1U);
+  std::vector<EngineEvent> events(engine->maximum_event_capacity());
   const auto replayed =
       replay_journal(*journal, *engine, point.sequence, point.logical_time, events);
   if (!replayed.has_value()) {

@@ -30,11 +30,35 @@ TEST(CommandPayloadTest, CanonicalFactoriesCoverEveryCommandType) {
       CommandPayload::cancel(Handle{2, 3}),
       CommandPayload::amend_quantity(Handle{4, 5}, Quantity{6}),
       CommandPayload::replace(Handle{7, 8}, Price{101}, Quantity{12}),
+      CommandPayload::submit_iceberg(OrderId{9}, Side::sell, Price{100}, Quantity{20},
+                 Quantity{4}),
+      CommandPayload::submit_stop(OrderId{10}, Side::buy,
+                  Price{std::numeric_limits<std::int64_t>::min()}, Quantity{3}),
+      CommandPayload::submit_stop_limit(OrderId{11}, Side::sell,
+                    Price{std::numeric_limits<std::int64_t>::max()},
+                    Price{99}, Quantity{5}),
   };
 
   for (const CommandPayload& payload : payloads) {
     EXPECT_EQ(validate_command_payload(payload), CommandValidationError::none);
   }
+}
+
+TEST(CommandPayloadTest, StopTriggerUsesFullSignedInt64CarrierAndCanonicalMarketPrice) {
+  const CommandPayload market = CommandPayload::submit_stop(
+      OrderId{1U}, Side::buy, Price{std::numeric_limits<std::int64_t>::min()}, Quantity{2U});
+  const CommandPayload limit = CommandPayload::submit_stop_limit(
+      OrderId{2U}, Side::sell, Price{std::numeric_limits<std::int64_t>::max()}, Price{-7},
+      Quantity{3U});
+
+  EXPECT_EQ(market.price_ticks, 0);
+  EXPECT_EQ(market.stop_trigger_price(), Price{std::numeric_limits<std::int64_t>::min()});
+  EXPECT_EQ(limit.stop_trigger_price(), Price{std::numeric_limits<std::int64_t>::max()});
+  EXPECT_EQ(limit.price_ticks, -7);
+
+  CommandPayload malformed = market;
+  malformed.price_ticks = 1;
+  EXPECT_EQ(validate_command_payload(malformed), CommandValidationError::noncanonical);
 }
 
 TEST(CommandPayloadTest, RejectsInvalidEnumsAndNoncanonicalUnusedFields) {
@@ -125,7 +149,7 @@ class SequencedEngineTest : public ::testing::Test {
 public:
   SequencedEngine engine{PriceDomain{Price{100}, 11U}, 8U, Quantity{100U}};
   Sequencer sequencer;
-  std::array<EngineEvent, 9> events{};
+  std::array<EngineEvent, 17> events{};
 
   ApplyResult apply(const CommandPayload& payload) {
     const auto command = sequencer.stamp(payload, sequencer.last_logical_time() + 1U);
@@ -238,9 +262,47 @@ TEST(SequencedEngineCapacityTest, MarketRequiresResultPlusEveryPossibleMaker) {
   EXPECT_EQ(engine.order_book().best_ask(), std::nullopt);
 }
 
+TEST(SequencedEngineCapacityTest, StopCascadePreflightsDormantStopBound) {
+  SequencedEngine engine{PriceDomain{Price{0}, 201U}, 2U, Quantity{10U}};
+  std::array<EngineEvent, 5U> events{};
+  ASSERT_EQ(engine.apply({CommandPayload::submit_stop(OrderId{1U}, Side::buy, Price{100},
+                                                        Quantity{1U}),
+                          Sequence{1U}, 1U},
+                         events)
+                .status,
+            ApplyStatus::applied);
+  const Handle stop = events[0].handle;
+
+  ASSERT_EQ(engine.apply({CommandPayload::submit_limit(OrderId{2U}, Side::sell, Price{100},
+                                                       Quantity{1U}),
+                          Sequence{2U}, 2U},
+                         events)
+                .status,
+            ApplyStatus::applied);
+  const SequencedCommand trigger{CommandPayload::submit_market(OrderId{3U}, Side::buy,
+                                                                Quantity{1U}),
+                                 Sequence{3U}, 3U};
+  EXPECT_EQ(engine.apply(trigger, std::span<EngineEvent>{events}.first(3U)),
+            (ApplyResult{ApplyStatus::insufficient_event_capacity, 0U}));
+  EXPECT_TRUE(engine.order_book().order_info(stop).has_value());
+  EXPECT_EQ(engine.order_book().best_ask(), Price{100});
+
+  EXPECT_EQ(engine.apply(trigger, std::span<EngineEvent>{events}.first(4U)),
+            (ApplyResult{ApplyStatus::applied, 3U}));
+  EXPECT_EQ(events[1].type, EngineEventType::trade);
+  EXPECT_EQ(events[2], (EngineEvent{.command_sequence = Sequence{3U},
+                                    .order_id = OrderId{1U},
+                                    .quantity = Quantity{0U},
+                                    .secondary_quantity = Quantity{1U},
+                                    .handle = Handle{kInvalidIndex, 0U},
+                                    .event_index = 2U,
+                                    .type = EngineEventType::stop_triggered}));
+  EXPECT_FALSE(engine.order_book().order_info(stop).has_value());
+}
+
 TEST(SequencedEngineCapacityTest, LiveReplaceNeedsAtMostArenaCapacityTotalEvents) {
   SequencedEngine engine{PriceDomain{Price{100}, 11U}, 3U, Quantity{100U}};
-  std::array<EngineEvent, 4> events{};
+  std::array<EngineEvent, 7> events{};
   ASSERT_EQ(
       engine
           .apply({CommandPayload::submit_limit(OrderId{1}, Side::buy, Price{100}, Quantity{3}),

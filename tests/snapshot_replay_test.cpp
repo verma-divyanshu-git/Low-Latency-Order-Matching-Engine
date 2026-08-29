@@ -109,6 +109,22 @@ TEST(ReplayFingerprintTest, StreamsCanonicalEventBytes) {
   EXPECT_EQ(fingerprint.crc32c(), 0x48a49a71U);
 }
 
+TEST(EngineEventCodecTest, RoundTripsStopTriggeredWithoutChangingPayloadSize) {
+  const EngineEvent event{.command_sequence = Sequence{9U},
+                          .order_id = OrderId{17U},
+                          .quantity = Quantity{3U},
+                          .secondary_quantity = Quantity{2U},
+                          .handle = Handle{4U, 5U},
+                          .event_index = 6U,
+                          .type = EngineEventType::stop_triggered};
+  std::array<std::byte, kEncodedEngineEventSize> bytes{};
+
+  ASSERT_EQ(encode_engine_event(event, bytes), EventCodecError::none);
+  EXPECT_EQ(bytes[60], std::byte{0x04});
+  EXPECT_EQ(decode_engine_event(bytes), event);
+  EXPECT_EQ(sizeof(EngineEvent), kEncodedEngineEventSize);
+}
+
 TEST(MarketDataReplayTest, ReplaysValidatedFramesThroughGatewayAndMatcher) {
   TemporaryDirectory temporary;
   const auto path = temporary.path() / "market-data.bin";
@@ -140,7 +156,7 @@ TEST(MarketDataReplayTest, ReplaysValidatedFramesThroughGatewayAndMatcher) {
                        .max_orders_per_second = 4U};
   MarketDataAdapter adapter{GatewayValidator{config}};
   SequencedEngine engine{PriceDomain{Price{100}, 3U}, 4U, Quantity{10U}};
-  std::array<EngineEvent, 5U> events{};
+  std::array<EngineEvent, 9U> events{};
 
   const auto replayed = replay_market_data(*input, adapter, engine, events);
   ASSERT_TRUE(replayed.has_value());
@@ -190,7 +206,8 @@ TEST(SnapshotCodecTest, PreservesGenerationAndFifoState) {
   const auto encoded = encode_snapshot(engine, SnapshotPoint{Sequence{3U}, 12U});
   ASSERT_TRUE(encoded.has_value());
   auto restored = decode_snapshot(*encoded);
-  ASSERT_TRUE(restored.has_value());
+  ASSERT_TRUE(restored.has_value())
+      << snapshot_error_message(restored.error());
   EXPECT_EQ(restored->engine->order_book().order_info(live),
             (OrderInfo{OrderId{2U}, Side::sell, Price{103}, Quantity{7U}}));
   EXPECT_FALSE(restored->engine->order_book().order_info(canceled).has_value());
@@ -208,6 +225,52 @@ TEST(SnapshotCodecTest, PreservesGenerationAndFifoState) {
       ApplyStatus::applied);
   EXPECT_EQ(events[0].handle.index, live.index);
   EXPECT_GT(events[0].handle.generation, live.generation);
+}
+
+TEST(SnapshotCodecTest, PreservesDormantStopsAndLastExecutionPrice) {
+  SequencedEngine engine{PriceDomain{Price{0}, 201U}, 4U, Quantity{10U}};
+  std::array<EngineEvent, 6U> events{};
+  ASSERT_EQ(engine.apply({CommandPayload::submit_limit(OrderId{1U}, Side::sell, Price{100},
+                             Quantity{1U}),
+              Sequence{1U}, 1U},
+             events)
+        .status,
+      ApplyStatus::applied);
+  ASSERT_EQ(engine.apply({CommandPayload::submit_market(OrderId{2U}, Side::buy, Quantity{1U}),
+              Sequence{2U}, 2U},
+             events)
+        .status,
+      ApplyStatus::applied);
+  ASSERT_EQ(engine.apply({CommandPayload::submit_stop(OrderId{3U}, Side::sell, Price{90},
+                             Quantity{2U}),
+              Sequence{3U}, 3U},
+             events)
+        .status,
+      ApplyStatus::applied);
+  const Handle dormant = events[0].handle;
+
+  const auto encoded = encode_snapshot(engine, SnapshotPoint{Sequence{3U}, 3U});
+  ASSERT_TRUE(encoded.has_value());
+  auto restored = decode_snapshot(*encoded);
+  ASSERT_TRUE(restored.has_value())
+      << snapshot_error_message(restored.error());
+  EXPECT_EQ(restored->engine->order_book().last_execution_price(), Price{100});
+  EXPECT_EQ(restored->engine->order_book().order_info(dormant),
+      (OrderInfo{OrderId{3U}, Side::sell, Price{0}, Quantity{2U}}));
+  EXPECT_EQ(restored->engine->order_book().check_invariants().violation, InvariantViolation::none);
+  EXPECT_EQ(restored->engine->apply({CommandPayload::cancel(dormant), Sequence{4U}, 4U}, events)
+        .status,
+      ApplyStatus::applied);
+  EXPECT_EQ(events[0].reason, static_cast<std::uint8_t>(CancelReason::none));
+
+  ASSERT_EQ(restored->engine
+        ->apply({CommandPayload::submit_stop_limit(OrderId{4U}, Side::buy, Price{100},
+                              Price{99}, Quantity{1U}),
+             Sequence{5U}, 5U},
+            events)
+        .status,
+      ApplyStatus::applied);
+  EXPECT_EQ(restored->engine->order_book().best_bid(), Price{99});
 }
 
 TEST(SnapshotCodecTest, PreservesSelfTradePolicyAndTraderIdentity) {
@@ -258,7 +321,7 @@ TEST(SnapshotCodecTest, RejectsCorruptionAndNoncanonicalDeadPayload) {
   SequencedEngine engine{PriceDomain{Price{0}, 1U}, 1U, Quantity{1U}};
   auto bytes = encode_snapshot(engine, SnapshotPoint{Sequence{0U}, 0U});
   ASSERT_TRUE(bytes.has_value());
-  (*bytes)[8] = std::byte{4U};
+  (*bytes)[8] = std::byte{5U};
   EXPECT_EQ(decode_snapshot(*bytes).error(), SnapshotError::unsupported_version);
 
   bytes = encode_snapshot(engine, SnapshotPoint{Sequence{0U}, 0U});
@@ -276,7 +339,7 @@ TEST(SnapshotCodecTest, ReachesEveryHeaderAndArenaValidatorWithValidCrc) {
   const std::size_t second = first + kSnapshotSlotSize;
 
   expect_snapshot_mutation(
-      *encoded, [](auto& bytes) { write_snapshot_u32(bytes, 8U, 4U); },
+      *encoded, [](auto& bytes) { write_snapshot_u32(bytes, 8U, 5U); },
       SnapshotError::unsupported_version);
   expect_snapshot_mutation(
       *encoded, [](auto& bytes) { bytes[0U] = std::byte{'X'}; }, SnapshotError::invalid_header);
@@ -296,7 +359,8 @@ TEST(SnapshotCodecTest, ReachesEveryHeaderAndArenaValidatorWithValidCrc) {
       },
       SnapshotError::invalid_length);
   expect_snapshot_mutation(
-      *encoded, [](auto& bytes) { bytes[100U] = std::byte{1U}; }, SnapshotError::invalid_header);
+      *encoded, [](auto& bytes) { write_snapshot_u32(bytes, 108U, 2U); },
+      SnapshotError::invalid_header);
   expect_snapshot_mutation(
       *encoded, [](auto& bytes) { write_snapshot_u32(bytes, 48U, 3U); },
       SnapshotError::invalid_length);
@@ -544,7 +608,7 @@ TEST(ReplayTest, SnapshotBoundarySkipsPrefixAndReplaysExactSuffix) {
                        13U},
   };
   SequencedEngine uninterrupted{PriceDomain{Price{100}, 5U}, 4U, Quantity{10U}};
-  std::array<EngineEvent, 5U> events{};
+  std::array<EngineEvent, 9U> events{};
   for (std::size_t index = 0; index < 2U; ++index) {
     ASSERT_EQ(journal->append(commands[index]), JournalError::none);
     ASSERT_EQ(uninterrupted.apply(commands[index], events).status, ApplyStatus::applied);
@@ -578,7 +642,7 @@ TEST(ReplayTest, ExactMixedContinuationPreservesEventsHandlesAndNextAllocation) 
   auto journal = MmapJournal::create(journal_path, 14U);
   ASSERT_TRUE(journal.has_value());
   SequencedEngine uninterrupted{PriceDomain{Price{100}, 5U}, 4U, Quantity{20U}};
-  std::array<EngineEvent, 6U> events{};
+  std::array<EngineEvent, 9U> events{};
   std::uint64_t sequence = 1U;
   auto append_apply = [&](CommandPayload payload) {
     const SequencedCommand command{payload, Sequence{sequence}, sequence + 10U};
@@ -725,7 +789,7 @@ TEST(ReplayBoundaryTest, EmptySnapshotAppliesJournalCommands) {
                        Sequence{1U}, 2U}),
       JournalError::none);
   SequencedEngine engine{PriceDomain{Price{0}, 1U}, 1U, Quantity{1U}};
-  std::array<EngineEvent, 2U> events{};
+  std::array<EngineEvent, 3U> events{};
 
   const auto replayed = replay_journal(*journal, engine, Sequence{0U}, 0U, events);
 

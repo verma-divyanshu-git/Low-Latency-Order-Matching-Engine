@@ -83,6 +83,15 @@ struct SubmitResult {
   Handle resting_handle;
 };
 
+struct StopActivation {
+  OrderId order_id{0U};
+  Quantity executed_quantity{0U};
+  Quantity unfilled_quantity{0U};
+  Handle resting_handle{};
+
+  constexpr bool operator==(const StopActivation&) const noexcept = default;
+};
+
 enum class CancelReason : std::uint8_t {
   none,
   invalid_handle,
@@ -138,6 +147,7 @@ enum class InvariantViolation : std::uint8_t {
   level_aggregate_mismatch,
   live_order_unreachable,
   reachable_count_mismatch,
+  invalid_stop_state,
   crossed_book,
 };
 
@@ -154,6 +164,7 @@ struct InvariantResult {
 static_assert(std::is_trivially_copyable_v<Trade>);
 static_assert(std::is_trivially_copyable_v<OrderInfo>);
 static_assert(std::is_trivially_copyable_v<SubmitResult>);
+static_assert(std::is_trivially_copyable_v<StopActivation>);
 static_assert(std::is_trivially_copyable_v<CancelResult>);
 static_assert(std::is_trivially_copyable_v<AmendResult>);
 static_assert(std::is_trivially_copyable_v<InvariantResult>);
@@ -190,6 +201,11 @@ public:
                                             std::span<Trade> trades) noexcept;
   [[nodiscard]] SubmitResult submit_market(OrderId id, Side side, Quantity quantity,
                                            std::span<Trade> trades) noexcept;
+  [[nodiscard]] SubmitResult submit_stop(OrderId id, Side side, Price trigger_price,
+                                         Quantity quantity, std::span<Trade> trades) noexcept;
+  [[nodiscard]] SubmitResult submit_stop_limit(OrderId id, Side side, Price trigger_price,
+                                               Price limit_price, Quantity quantity,
+                                               std::span<Trade> trades) noexcept;
   [[nodiscard]] CancelResult cancel(Handle handle) noexcept;
   [[nodiscard]] AmendResult amend_quantity(Handle handle, Quantity new_remaining) noexcept;
   [[nodiscard]] SubmitResult replace(Handle handle, Price new_price, Quantity new_quantity,
@@ -199,6 +215,8 @@ public:
   [[nodiscard]] RejectReason preflight_post_only(Side side, Price price,
                                                  Quantity quantity) const noexcept;
   [[nodiscard]] RejectReason preflight_market(Side side, Quantity quantity) const noexcept;
+  [[nodiscard]] RejectReason preflight_stop(Side side, std::optional<Price> limit_price,
+                                            Quantity quantity) const noexcept;
   [[nodiscard]] RejectReason preflight_replace(Handle handle, Price new_price,
                                                Quantity new_quantity) const noexcept;
 
@@ -206,7 +224,16 @@ public:
   [[nodiscard]] std::optional<Price> best_ask() const noexcept;
   [[nodiscard]] std::optional<LevelInfo> level_info(Side side, Price price) const noexcept;
   [[nodiscard]] std::optional<OrderInfo> order_info(Handle handle) const noexcept;
+  [[nodiscard]] std::optional<Price> last_execution_price() const noexcept {
+    return last_execution_price_;
+  }
   [[nodiscard]] std::size_t required_trade_capacity() const noexcept;
+  [[nodiscard]] std::span<const StopActivation> stop_activations() const noexcept {
+    return {stop_activations_.get(), stop_activation_count_};
+  }
+  [[nodiscard]] std::size_t dormant_stop_count() const noexcept {
+    return dormant_stop_count_;
+  }
   [[nodiscard]] InvariantResult check_invariants() noexcept;
 
 private:
@@ -229,8 +256,23 @@ private:
                    std::uint32_t level_index,
                    std::uint64_t& remaining, std::span<Trade> trades,
                    std::uint32_t& trade_count) noexcept;
+  [[nodiscard]] bool stop_is_triggered(Side side, Price trigger_price) const noexcept;
+  [[nodiscard]] Handle rest_stop(OrderId id, Side side, Price trigger_price,
+                                 std::optional<Price> limit_price,
+                                 Quantity quantity) noexcept;
+  void detach_stop(std::uint32_t index) noexcept;
+  void unlink_stop(Handle handle) noexcept;
+  [[nodiscard]] SubmitResult activate_stop(Handle handle, std::span<Trade> trades,
+                                           std::uint32_t& trade_count) noexcept;
+  void trigger_stops(std::span<Trade> trades, std::uint32_t& trade_count) noexcept;
+  void reset_stop_activations() noexcept {
+    stop_activation_count_ = 0U;
+  }
   [[nodiscard]] Handle rest(OrderId id, TraderId trader_id, Side side, std::uint32_t level_index,
                             std::uint64_t remaining, std::uint64_t display_quantity) noexcept;
+  void rest_existing(Handle handle, OrderId id, TraderId trader_id, Side side,
+                     std::uint32_t level_index, std::uint64_t remaining,
+                     std::uint64_t display_quantity) noexcept;
   void move_to_tail(std::uint32_t order_index) noexcept;
   void unlink(Handle handle, std::uint64_t aggregate_reduction) noexcept;
   [[nodiscard]] std::optional<std::uint32_t> best_index(Side side) const noexcept;
@@ -255,6 +297,16 @@ private:
   std::unique_ptr<TraderId[]> trader_ids_;
   std::unique_ptr<std::uint64_t[]> display_quantities_;
   std::unique_ptr<std::uint64_t[]> displayed_remaining_;
+  std::unique_ptr<std::int64_t[]> stop_trigger_prices_;
+  std::unique_ptr<std::int64_t[]> stop_limit_prices_;
+  std::unique_ptr<std::uint32_t[]> stop_prev_indices_;
+  std::unique_ptr<std::uint32_t[]> stop_next_indices_;
+  std::uint32_t stop_head_{kInvalidIndex};
+  std::uint32_t stop_tail_{kInvalidIndex};
+  std::size_t dormant_stop_count_{};
+  std::unique_ptr<StopActivation[]> stop_activations_;
+  std::size_t stop_activation_count_{};
+  std::optional<Price> last_execution_price_;
   SelfTradePolicy self_trade_policy_;
   std::unique_ptr<std::uint32_t[]> trade_report_indices_;
   std::unique_ptr<std::uint32_t[]> trade_report_epochs_;
