@@ -26,7 +26,7 @@ Phase 4B adds versioned canonical engine snapshots, atomic replacement persisten
 Snapshots and replay fingerprints have CRC32C corruption detection but no cryptographic authentication.
 Phase 5A adds an exact-capacity allocation-free SPSC queue and non-thread-owning durable ingress, single-writer matching, and ordered publication stages.
 Ingress appends before publication, matching preflights complete event-batch capacity before mutation, and persistence or sequence uncertainty poisons the affected stage.
-Journal compaction, rotation, and replication remain unimplemented.
+Journal rotation, compaction, and multi-segment recovery are implemented; replication remains unimplemented.
 Steady-clock fallback can pass clock safety for local regression use but is always marked non-publishable.
 No latency or throughput claims should be inferred from this repository.
 
@@ -108,17 +108,18 @@ Future benchmark reports will:
 ## Limitations and non-goals
 
 - This is not production-ready trading software.
-- Command-journal persistence, snapshots, and replay verification are implemented, but compaction, rotation, networking, risk checks, authentication, authorization, administration, and operational monitoring are not.
+- Command-journal persistence, rotation, compaction, snapshots, replay verification, gateway risk limits, strict runtime configuration, lifecycle, and health reporting are implemented.
+- Networking, authentication, authorization, account controls, cryptographic file authentication, administration services, and real-money safeguards are not implemented.
 - Order capacity and price-domain size are each capped at 1,000,000 to bound snapshot files and restore-time memory amplification.
 - Exhausted terminal snapshots can be loaded, but the current replay verifier rejects them because a sequence-1 journal cannot prove the `UINT64_MAX` boundary.
-- Duplicate order identifiers are not detected by the matching core and must be rejected by a future gateway.
-- Structural invariant checks do not prove volume conservation by themselves; the differential driver checks an independent conservation ledger, while self-trade prevention remains unimplemented.
+- Duplicate order identifiers are not detected by the matching core and are rejected by the gateway boundary.
+- Structural invariant checks do not prove volume conservation by themselves; the differential driver checks an independent conservation ledger.
 - Each order book requires exclusive access by one matching thread; concurrent calls are unsupported.
 - Price and order capacities are fixed at construction, and callers must provide `max_orders` trade slots for every submission.
 - Market and IOC residual is cancelled, while FOK rejects without mutation unless the full quantity is immediately executable within its limit.
 - Amendments only support retaining or decreasing remaining quantity; any resting replacement receives a new generation and loses queue priority.
-- Exchange-specific order types and broader market rules are not defined.
-- Distributed consensus and cross-process deterministic replay are not Phase 0 goals.
+- Implemented exchange semantics are limited to the documented post-only, self-trade prevention, iceberg, stop, threshold pro-rata, and opening-cross rules.
+- Distributed consensus and replication are not implemented.
 - Kernel bypass, FPGA integration, and custom hardware are not current goals.
 - The project will not trade correctness or determinism for an attractive benchmark number.
 
@@ -135,6 +136,9 @@ Future benchmark reports will:
 - [Durable three-stage pipeline](docs/pipeline.md)
 - [Primary references](docs/references.md)
 - [Security policy](SECURITY.md)
+- [Threat model](docs/threat-model.md)
+- [Resource limits](docs/resource-limits.md)
+- [Installation and packaging](docs/packaging.md)
 
 ## License
 
