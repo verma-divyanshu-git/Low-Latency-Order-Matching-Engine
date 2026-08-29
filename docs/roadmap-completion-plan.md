@@ -196,12 +196,18 @@ Add an honest design-alternatives section.
 
 The evidence-driven README, deterministic technical SVG generator, artifact links, reproduction links, and design-alternatives section are implemented on `docs/evidence-readme`.
 No qualified latency or resume claim is included.
+PR #52 merged Phase 9 at `7ff39a8`; all seven CI jobs passed.
+Phase 9 is complete.
 
 ### Phase 10: release gate
 
 Require green CI and presets, deterministic snapshot-plus-journal replay, correct identity, a clean repository, complete artifacts, no paid or card-required infrastructure, and no unsupported claims.
 Retain only `main` and `develop` after all temporary branches are deleted.
 Tag only after every condition holds.
+
+The automated pre-release gate is implemented on `chore/release-readiness`.
+It checks all local presets, deterministic recovery, packages, evidence claims, identity, clean-tree state, and local and remote branch policy, then writes a checksum report.
+The release tag remains blocked by Phase 8 host qualification.
 
 ## Execution order
 
