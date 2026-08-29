@@ -23,13 +23,14 @@ Last updated: 2026-08-29.
 - Phase 6 is complete in PRs #44, #45, #46, and #47; final package and security boundaries merged at `e88c9a5`.
 - Phase 7 measured optimization is complete in PRs #49 and #50.
 - Phase 7 retained equivalent comparison, full-engine sweep, manifest, and rejected-hypothesis evidence; the measured decision is to keep the production ladder.
+- Phase 9 evidence-driven README is complete in PR #52 at `7ff39a8`.
+- Phase 10 pre-release automation and every non-Phase-8 release gate are complete in PR #53 at `5d6b519`.
 
 ### In progress
 
 - Phase 8 host qualification remains open.
 - The current free no-card host attempt is a retained live Darwin arm64 report with `qualified: false`; no CI or Mac latency claim will be published.
-- Phase 9 evidence-driven README is merged in PR #52 at `7ff39a8` with generated technical SVGs, manifest-linked regression evidence, reproduction commands, and design alternatives.
-- Phase 10 pre-release automation is implemented on `chore/release-readiness`; final tagging remains blocked by Phase 8 only.
+- Final release tagging remains blocked by Phase 8 only.
 
 ### Not started
 
@@ -92,6 +93,11 @@ Last updated: 2026-08-29.
 - Next: obtain a genuinely qualified free x86 Linux host for Phase 8, or leave latency claims absent and proceed only with regression evidence.
 - Done: PR #52 merged the evidence-driven README and deterministic technical assets into `main` at `7ff39a8`; all seven CI jobs passed.
 - Phase 9 is complete without qualified latency or resume claims.
+- Done: PR #53 merged the automated release readiness gate into `main` at `5d6b519`; all seven CI jobs passed.
+- Verified: the complete local pre-release gate passed 24 sequential configure, build, test, sanitizer, fuzz, measurement, recovery, and packaging checks with zero errors.
+- Verified on clean `main`: approved identity, synchronized `origin/main`, clean worktree, retained evidence contracts, and exact local and remote branch policy pass.
+- Release report status remains `phase8_host_qualified: false`, `latency_publishable: false`, and `tagging_blocked_by_phase8: true`.
+- All work that does not require a qualified Phase 8 host is complete.
 
 - Done: `develop` now exists on `origin` from current `main`.
 - Done: local identity hooks require Divyanshu's personal commit identity and the approved GitHub account.
